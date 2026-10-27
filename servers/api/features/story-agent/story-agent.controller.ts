@@ -2,18 +2,30 @@ import { randomUUID } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { ERROR_CODES, ERROR_MESSAGES, HTTP_STATUS } from "../../constants/index.js";
 import { createApplicationError } from "../../errors/index.js";
+import type { StoryAgentCapacity } from "./story-agent.capacity.js";
 import { requirementInputSchema } from "./story-agent.validation.js";
 import type { StoryAgentRepository, StoryAgentRunDocument } from "./story-agent.repository.js";
 import type { StoryAgentPipelineResult } from "./story-agent.service.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: Readonly<{ requirement: string; context?: string | undefined }>) => Promise<StoryAgentPipelineResult> }>;
-type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; clock: Clock; createRunId?: () => string }>;
+type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; capacity: StoryAgentCapacity; clock: Clock; createRunId?: () => string }>;
 type JsonResponse = Pick<Response, "json" | "status">;
 
 const toIso = (value: number): string => new Date(value).toISOString();
 const queuedRetryDelayMs = 2 * 60 * 1_000;
 const queuedExpiryMs = 30 * 60 * 1_000;
+const queuedByCapacity = (): StoryAgentPipelineResult => ({
+  status: "queued",
+  attempts: 0,
+  usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  providers: [],
+  stages: [{ stage: "admission", status: "skipped", detail: "Run queued because this API instance is at model capacity." }],
+  validationErrors: [],
+  reason: "capacity_queued"
+});
+
+type QueueWrite = Readonly<{ input: Readonly<{ requirement: string; context?: string | undefined }>; pipeline: StoryAgentPipelineResult; runId: string; now: number }>;
 
 const runDocument = (runId: string, input: Readonly<{ requirement: string; context?: string | undefined }>, pipeline: StoryAgentPipelineResult, now: number): StoryAgentRunDocument => {
   const errorMessage = pipeline.status === "failed"
@@ -40,7 +52,21 @@ const runDocument = (runId: string, input: Readonly<{ requirement: string; conte
   };
 };
 
-export const createStoryAgentController = ({ repository, service, clock, createRunId = randomUUID }: ControllerDependencies) => ({
+export const createStoryAgentController = ({ repository, service, capacity, clock, createRunId = randomUUID }:
+  ControllerDependencies) => {
+  let queueWriteTail: Promise<void> = Promise.resolve();
+  const saveQueuedRun = async ({ input, pipeline, runId, now }: QueueWrite): Promise<boolean> => {
+    let release: (() => void) | undefined;
+    const previous = queueWriteTail;
+    queueWriteTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      if (await repository.countQueuedRuns() >= 20) return false;
+      await repository.saveRun(runDocument(runId, input, pipeline, now));
+      return true;
+    } finally { release?.(); }
+  };
+  return {
   createRun: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
     try {
       const input = requirementInputSchema.parse(request.body);
@@ -48,17 +74,31 @@ export const createStoryAgentController = ({ repository, service, clock, createR
         response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Story Agent queue is full. Please try again shortly." });
         return;
       }
-      const pipeline = await service.run(input);
+      const admission = capacity.acquire(request.socket.remoteAddress ?? "unknown");
+      if (admission.kind === "rate_limited") {
+        response.status(HTTP_STATUS.tooManyRequests).json({ error: "Too many Story Agent requests. Please try again shortly.", retryAfterMs: admission.retryAfterMs });
+        return;
+      }
+      const pipeline = admission.kind === "queued"
+        ? queuedByCapacity()
+        : await (async (): Promise<StoryAgentPipelineResult> => {
+          try { return await service.run(input); }
+          finally { admission.release(); }
+        })();
       const runId = createRunId();
       const now = clock.now();
+      if (pipeline.status === "queued") {
+        if (!await saveQueuedRun({ input, pipeline, runId, now })) {
+          response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Story Agent queue is full. Please try again shortly." });
+          return;
+        }
+        response.status(HTTP_STATUS.accepted).json({ runId, status: pipeline.status, message: "Providers are unavailable; the run is queued for retry." });
+        return;
+      }
       await repository.saveRun(runDocument(runId, input, pipeline, now));
       if (pipeline.status === "draft") {
         await repository.saveDraft({ runId, stories: pipeline.stories ?? [], createdAt: toIso(now) });
         response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, stories: pipeline.stories ?? [], usage: pipeline.usage });
-        return;
-      }
-      if (pipeline.status === "queued") {
-        response.status(HTTP_STATUS.accepted).json({ runId, status: pipeline.status, message: "Providers are unavailable; the run is queued for retry." });
         return;
       }
       if (pipeline.status === "questions") {
@@ -109,4 +149,5 @@ export const createStoryAgentController = ({ repository, service, clock, createR
       next(error);
     }
   }
-});
+  };
+};

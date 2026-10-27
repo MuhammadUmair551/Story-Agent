@@ -27,6 +27,7 @@ void test("composes the server-owned MongoDB integration when configured", async
         insertOne: () => Promise.resolve({ insertedId: "unused" }),
         findOne: () => Promise.resolve(null),
         find: () => Promise.resolve([]),
+        countDocuments: () => Promise.resolve(0),
         updateOne: () => Promise.resolve({ matchedCount: 0, modifiedCount: 0 }),
         findOneAndUpdate: () => Promise.resolve(null),
         createIndex: () => Promise.resolve("unused")
@@ -74,6 +75,10 @@ void test("exposes typed collections to feature dependencies after connecting", 
       calls.push(`find:${String(filter.status)}:${String(options?.skip)}:${String(options?.limit)}`);
       return Promise.resolve([{ runId: "run-2", status: "draft" }]);
     },
+    countDocuments: (filter) => {
+      calls.push(`count:${String(filter.status)}`);
+      return Promise.resolve(1);
+    },
     updateOne: (filter, update) => {
       calls.push(`update:${String(filter.runId)}:${String(update.$set?.status)}`);
       return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
@@ -101,6 +106,7 @@ void test("exposes typed collections to feature dependencies after connecting", 
   await runs.insertOne({ runId: "run-1", status: "draft" });
   await runs.findOne({ runId: "run-1" });
   assert.deepEqual(await runs.find({ status: "draft" }, { sort: { runId: -1 }, skip: 1, limit: 2 }), [{ runId: "run-2", status: "draft" }]);
+  assert.equal(await runs.countDocuments({ status: "draft" }), 1);
   assert.deepEqual(await runs.updateOne({ runId: "run-1" }, { $set: { status: "questions" } }), { matchedCount: 1, modifiedCount: 1 });
   assert.equal(await runs.createIndex({ runId: 1 }, { unique: true, name: "runId_unique" }), "runId_unique");
 
@@ -109,6 +115,7 @@ void test("exposes typed collections to feature dependencies after connecting", 
     "insert:run-1",
     "find:run-1",
     "find:draft:1:2",
+    "count:draft",
     "update:run-1:questions",
     "index:1:true"
   ]);

@@ -54,7 +54,7 @@ export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepo
     listRuns: async ({ limit, skip }): Promise<StoryAgentRunDocument[]> => await runs.find({}, { sort: { createdAt: -1 }, limit, skip }),
     saveDraft: async (document): Promise<void> => { await drafts.insertOne(document); },
     getDraftByRun: async (runId): Promise<StoryAgentDraftDocument | null> => await drafts.findOne({ runId }),
-    countQueuedRuns: async (): Promise<number> => (await runs.find({ status: "queued" })).length,
+    countQueuedRuns: async (): Promise<number> => await runs.countDocuments({ status: "queued" }),
     claimQueuedRun: async (now, lockedUntil): Promise<StoryAgentRunDocument | null> => await runs.findOneAndUpdate({
       status: "queued",
       nextAttemptAt: { $lte: now },
@@ -63,7 +63,7 @@ export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepo
     ensureIndexes: async (): Promise<void> => {
       await runs.createIndex({ runId: 1 }, { unique: true, name: "story_agent_runs_run_id" });
       await runs.createIndex({ createdAt: -1 }, { name: "story_agent_runs_created_at" });
-      await runs.createIndex({ status: 1, nextAttemptAt: 1 }, { name: "story_agent_runs_status_next_attempt" });
+      await runs.createIndex({ status: 1, nextAttemptAt: 1, lockedUntil: 1, createdAt: 1 }, { name: "story_agent_runs_queue_claim" });
       await drafts.createIndex({ runId: 1 }, { unique: true, name: "story_agent_drafts_run_id" });
     }
   });

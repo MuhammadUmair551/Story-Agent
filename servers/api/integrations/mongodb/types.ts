@@ -18,6 +18,7 @@ export type MongoCollection<TDocument extends MongoDocument> = Readonly<{
   insertOne: (document: TDocument) => Promise<MongoInsertResult>;
   findOne: (filter: Partial<TDocument>) => Promise<TDocument | null>;
   find: (filter: Partial<TDocument>, options?: MongoFindOptions) => Promise<TDocument[]>;
+  countDocuments: (filter: Partial<TDocument>) => Promise<number>;
   updateOne: (filter: Partial<TDocument>, update: MongoUpdate<TDocument>) => Promise<MongoUpdateResult>;
   findOneAndUpdate: (filter: Readonly<Record<string, unknown>>, update: MongoUpdate<TDocument>, options?: MongoFindOneAndUpdateOptions) => Promise<TDocument | null>;
   createIndex: (spec: Record<string, 1 | -1>, options?: MongoIndexOptions) => Promise<string>;

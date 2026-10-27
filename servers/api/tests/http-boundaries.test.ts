@@ -17,7 +17,11 @@ const config: ApiConfig = {
   port: 0,
   webOrigin: "http://localhost:3000",
   logLevel: "silent",
-  queueIntervalMs: 120_000
+  queueIntervalMs: 120_000,
+  storyAgentMaxConcurrentRuns: 2,
+  storyAgentMaxRequestsPerWindow: 6,
+  storyAgentRequestWindowMs: 60_000,
+  storyAgentMaxTrackedClients: 1_000
 };
 const persistence: MongoPersistence = { getCollection: () => { throw new Error("Persistence is not used by this test."); } };
 

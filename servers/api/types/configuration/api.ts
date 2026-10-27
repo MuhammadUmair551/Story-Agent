@@ -9,4 +9,8 @@ export type ApiConfig = Readonly<{
   mongodbUri?: string;
   logLevel: LogLevel;
   queueIntervalMs: number;
+  storyAgentMaxConcurrentRuns: number;
+  storyAgentMaxRequestsPerWindow: number;
+  storyAgentRequestWindowMs: number;
+  storyAgentMaxTrackedClients: number;
 }>;

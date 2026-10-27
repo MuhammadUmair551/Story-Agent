@@ -17,7 +17,11 @@ void test("derives API configuration from validated environment input", () => {
     port: 8080,
     webOrigin: "https://example.test",
     logLevel: "warn",
-    queueIntervalMs: 120_000
+    queueIntervalMs: 120_000,
+    storyAgentMaxConcurrentRuns: 2,
+    storyAgentMaxRequestsPerWindow: 6,
+    storyAgentRequestWindowMs: 60_000,
+    storyAgentMaxTrackedClients: 1_000
   });
 });
 

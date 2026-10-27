@@ -22,7 +22,7 @@ const database = createMongoDbIntegration({
 const llm = createLlmGateway({ fetch: globalThis.fetch });
 await database.connect();
 const storyAgent = config.mongodbUri
-  ? createStoryAgentFeature({ db: database, llm, logger, clock: { now: Date.now }, queueIntervalMs: config.queueIntervalMs })
+  ? createStoryAgentFeature({ db: database, llm, logger, clock: { now: Date.now }, queueIntervalMs: config.queueIntervalMs, maxConcurrentRuns: config.storyAgentMaxConcurrentRuns, maxRequestsPerWindow: config.storyAgentMaxRequestsPerWindow, requestWindowMs: config.storyAgentRequestWindowMs, maxTrackedClients: config.storyAgentMaxTrackedClients })
   : undefined;
 if (storyAgent) await storyAgent.ensureIndexes();
 const app = createApp({ config, logger, persistence: database, ...(storyAgent ? { storyAgentRouteDependencies: storyAgent.routeDependencies } : {}) });

@@ -1,10 +1,11 @@
 import type { Logger } from "@workspace/logging";
 import type { StoryAgentRepository, StoryAgentRunDocument } from "./story-agent.repository.js";
 import type { StoryAgentPipelineResult } from "./story-agent.service.js";
+import type { StoryAgentCapacity } from "./story-agent.capacity.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: Readonly<{ requirement: string; context?: string | undefined }>) => Promise<StoryAgentPipelineResult> }>;
-type QueueDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; logger: Logger; clock: Clock; intervalMs: number }>;
+type QueueDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; logger: Logger; clock: Clock; intervalMs: number; capacity?: StoryAgentCapacity | undefined }>;
 
 const lockDurationMs = 5 * 60 * 1_000;
 const maximumQueueAttempts = 5;
@@ -27,11 +28,16 @@ const resultFields = (result: StoryAgentPipelineResult, now: string): Partial<St
   updatedAt: now
 });
 
-export const createStoryAgentQueue = ({ repository, service, logger, clock, intervalMs }: QueueDependencies) => {
+export const createStoryAgentQueue = ({ repository, service, logger, clock, intervalMs, capacity }: QueueDependencies) => {
   let isProcessing = false;
   const processNext = async (): Promise<void> => {
     if (isProcessing) return;
     isProcessing = true;
+    const admission = capacity?.acquireBackground();
+    if (admission?.kind === "queued") {
+      isProcessing = false;
+      return;
+    }
     try {
       const startedAt = clock.now();
       const now = toIso(startedAt);
@@ -63,6 +69,7 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
         await repository.updateRunStatus(run.runId, "failed", { reason, error: reason, ...clearQueueFields, updatedAt: now });
       }
     } finally {
+      admission?.release();
       isProcessing = false;
     }
   };

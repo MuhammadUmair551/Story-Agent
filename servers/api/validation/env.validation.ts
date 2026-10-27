@@ -35,7 +35,11 @@ export const apiEnvironmentSchema = z.object({
   LLM_PROFILE_GENERATE: z.string().min(1).optional(),
   LLM_PROFILE_TOOLS: z.string().min(1).optional(),
   LLM_COOLDOWN_MS: z.coerce.number().int().positive().optional(),
-  QUEUE_INTERVAL_MS: z.coerce.number().int().positive().optional()
+  QUEUE_INTERVAL_MS: z.coerce.number().int().positive().optional(),
+  STORY_AGENT_MAX_CONCURRENT_RUNS: z.coerce.number().int().positive().optional(),
+  STORY_AGENT_MAX_REQUESTS_PER_WINDOW: z.coerce.number().int().positive().optional(),
+  STORY_AGENT_REQUEST_WINDOW_MS: z.coerce.number().int().positive().optional(),
+  STORY_AGENT_MAX_TRACKED_CLIENTS: z.coerce.number().int().positive().optional()
 }) satisfies z.ZodType<ValidatedApiEnvironment>;
 
 export const validateApiEnvironment = (input: unknown): ValidatedApiEnvironment => {

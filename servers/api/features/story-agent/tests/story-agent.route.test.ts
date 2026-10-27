@@ -7,6 +7,7 @@ import type { Logger } from "@workspace/logging";
 import type { MongoPersistence } from "../../../integrations/index.js";
 import { createErrorHandler } from "../../../middleware/index.js";
 import { createStoryAgentRoutes } from "../routes/story-agent.route.js";
+import { createStoryAgentCapacity } from "../story-agent.capacity.js";
 import type { StoryAgentRepository } from "../story-agent.repository.js";
 import type { StoryAgentPipelineResult } from "../story-agent.service.js";
 
@@ -14,6 +15,7 @@ const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 const story = { title: "A writer creates stories", intent: "Plan", epic: "Planning", size: "S" as const, acceptanceCriteria: ["Stories appear"], states: [], dependsOn: [], openQuestions: [], sliceRationale: "Proves creation." };
 const logger: Logger = { info: (): void => undefined, warn: (): void => undefined, error: (): void => undefined };
 const db: MongoPersistence = { getCollection: () => { throw new Error("Route test does not use Mongo directly."); } };
+const capacity = () => createStoryAgentCapacity({ maxConcurrentRuns: 100, maxRequestsPerWindow: 100, requestWindowMs: 60_000, maxTrackedClients: 100, clock: { now: () => 0 } });
 
 const result = (status: StoryAgentPipelineResult["status"]): StoryAgentPipelineResult => ({
   status, attempts: 1, usage, providers: ["gemini"], stages: [], validationErrors: [],
@@ -35,7 +37,12 @@ const createRepository = (saved: unknown[]): StoryAgentRepository => ({
   ensureIndexes: async () => undefined
 });
 
-const request = async (pipeline: StoryAgentPipelineResult): Promise<Readonly<{ response: Response; saved: unknown[] }>> => {
+const closeServer = async (server: ReturnType<typeof createServer>): Promise<void> => {
+  server.closeAllConnections();
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+};
+
+const request = async (pipeline: StoryAgentPipelineResult, admission = capacity()): Promise<Readonly<{ response: Response; saved: unknown[] }>> => {
   const saved: unknown[] = [];
   const app = express();
   app.use(express.json());
@@ -44,17 +51,18 @@ const request = async (pipeline: StoryAgentPipelineResult): Promise<Readonly<{ r
     logger,
     clock: { now: () => 0 },
     repository: createRepository(saved),
-    service: { run: async () => pipeline }
+    service: { run: async () => pipeline },
+    capacity: admission
   }));
   app.use(createErrorHandler({ logger }));
   const server = createServer(app);
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  const response = await fetch(`http://127.0.0.1:${String(address.port)}/story-agent/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirement: "Create stories" }) });
-  server.closeAllConnections();
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-  return { response, saved };
+  try {
+    const response = await fetch(`http://127.0.0.1:${String(address.port)}/story-agent/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirement: "Create stories" }) });
+    return { response, saved };
+  } finally { await closeServer(server); }
 };
 
 void test("POST saves and returns a draft", async () => {
@@ -74,16 +82,17 @@ void test("POST persists question payloads for history restoration", async () =>
     logger,
     clock: { now: () => 0 },
     repository: createRepository(saved),
-    service: { run: async () => ({ status: "questions", attempts: 1, usage, providers: ["gemini"], stages: [], validationErrors: [], questions: ["Who is the actor?"] }) }
+    service: { run: async () => ({ status: "questions", attempts: 1, usage, providers: ["gemini"], stages: [], validationErrors: [], questions: ["Who is the actor?"] }) },
+    capacity: capacity()
   }));
   app.use(createErrorHandler({ logger }));
   const server = createServer(app);
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  const response = await fetch(`http://127.0.0.1:${String(address.port)}/story-agent/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirement: "Create stories" }) });
-  server.closeAllConnections();
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  let response: Response;
+  try { response = await fetch(`http://127.0.0.1:${String(address.port)}/story-agent/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirement: "Create stories" }) }); }
+  finally { await closeServer(server); }
   assert.equal(response.status, 200);
   assert.deepEqual((saved[0] as { questions?: string[] }).questions, ["Who is the actor?"]);
 });
@@ -106,15 +115,26 @@ void test("POST rejects invalid request bodies", async () => {
   const saved: unknown[] = [];
   const app = express();
   app.use(express.json());
-  app.use(createStoryAgentRoutes({ db, logger, clock: { now: () => 0 }, repository: createRepository(saved), service: { run: async () => result("draft") } }));
+  app.use(createStoryAgentRoutes({ db, logger, clock: { now: () => 0 }, repository: createRepository(saved), service: { run: async () => result("draft") }, capacity: capacity() }));
   app.use(createErrorHandler({ logger }));
   const server = createServer(app);
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  const response = await fetch(`http://127.0.0.1:${String(address.port)}/story-agent/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirement: "" }) });
-  server.closeAllConnections();
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  let response: Response;
+  try { response = await fetch(`http://127.0.0.1:${String(address.port)}/story-agent/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirement: "" }) }); }
+  finally { await closeServer(server); }
   assert.equal(response.status, 400);
   assert.equal(saved.length, 0);
+});
+
+void test("POST rate limits repeated expensive requests before invoking the model", async () => {
+  const admission = createStoryAgentCapacity({ maxConcurrentRuns: 1, maxRequestsPerWindow: 1, requestWindowMs: 60_000, maxTrackedClients: 10, clock: { now: () => 0 } });
+  const first = await request(result("draft"), admission);
+  const second = await request(result("draft"), admission);
+
+  assert.equal(first.response.status, 200);
+  assert.equal(second.response.status, 429);
+  assert.equal((await second.response.json() as { retryAfterMs: number }).retryAfterMs, 60_000);
+  assert.equal(second.saved.length, 0);
 });

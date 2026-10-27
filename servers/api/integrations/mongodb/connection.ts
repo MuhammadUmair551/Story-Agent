@@ -32,6 +32,7 @@ const mongooseClient: MongoClient = Object.freeze({
             if (options.limit !== undefined) cursor = cursor.limit(options.limit);
             return await cursor.toArray() as unknown as TDocument[];
           },
+          countDocuments: async (filter: Partial<TDocument>): Promise<number> => await collection.countDocuments(filter),
           updateOne: async (filter: Partial<TDocument>, update: MongoUpdate<TDocument>) => {
             const result = await collection.updateOne(filter, update);
             return Object.freeze({ matchedCount: result.matchedCount, modifiedCount: result.modifiedCount });

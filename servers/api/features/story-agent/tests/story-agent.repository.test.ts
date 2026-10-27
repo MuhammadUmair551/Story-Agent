@@ -30,6 +30,7 @@ const createMemoryPersistence = (): Readonly<{ db: MongoPersistence; indexes: st
       }) : items;
       return Promise.resolve(sorted.slice(options?.skip ?? 0, (options?.skip ?? 0) + (options?.limit ?? sorted.length)) as TDocument[]);
     },
+    countDocuments: (filter) => Promise.resolve((documents.get(name) ?? []).filter((document) => matches(document, filter)).length),
     updateOne: (filter, update) => {
       const item = (documents.get(name) ?? []).find((document) => matches(document, filter));
       if (!item) return Promise.resolve({ matchedCount: 0, modifiedCount: 0 });
@@ -66,7 +67,7 @@ void test("saves, retrieves, updates, lists, and indexes runs", async () => {
   assert.deepEqual(persistence.indexes, [
     "story_agent_runs:runId:true",
     "story_agent_runs:createdAt:undefined",
-    "story_agent_runs:status,nextAttemptAt:undefined",
+    "story_agent_runs:status,nextAttemptAt,lockedUntil,createdAt:undefined",
     "story_agent_drafts:runId:true"
   ]);
 });
@@ -79,6 +80,15 @@ void test("saves and retrieves drafts by run id", async () => {
   await repository.saveDraft(draft);
 
   assert.deepEqual(await repository.getDraftByRun("run-1"), draft);
+});
+
+void test("counts queued runs without materializing the queue", async () => {
+  const persistence = createMemoryPersistence();
+  const repository = createStoryAgentRepository(persistence.db);
+  await repository.saveRun({ ...run("queued", "2026-01-01T00:00:00.000Z"), status: "queued" });
+  await repository.saveRun(run("draft", "2026-01-02T00:00:00.000Z"));
+
+  assert.equal(await repository.countQueuedRuns(), 1);
 });
 
 void test("persists run metadata needed to restore history state", async () => {

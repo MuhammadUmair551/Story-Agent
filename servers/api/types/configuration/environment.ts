@@ -38,4 +38,8 @@ export type ValidatedApiEnvironment = Readonly<{
   LLM_PROFILE_TOOLS?: string | undefined;
   LLM_COOLDOWN_MS?: number | undefined;
   QUEUE_INTERVAL_MS?: number | undefined;
+  STORY_AGENT_MAX_CONCURRENT_RUNS?: number | undefined;
+  STORY_AGENT_MAX_REQUESTS_PER_WINDOW?: number | undefined;
+  STORY_AGENT_REQUEST_WINDOW_MS?: number | undefined;
+  STORY_AGENT_MAX_TRACKED_CLIENTS?: number | undefined;
 }>;
