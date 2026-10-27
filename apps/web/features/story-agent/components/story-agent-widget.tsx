@@ -170,12 +170,12 @@ export const StoryAgentWidget = ({ apiBaseUrl }: StoryAgentWidgetProps): React.J
       aria-label="Open Story Agent"
       aria-expanded={isOpen}
       aria-controls="story-agent-panel"
-      className="gecko-launcher group fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-40 size-[4.4rem] rounded-full border border-cyan-200/35 p-1 text-[#b8e47a] transition duration-200 hover:-translate-y-1 hover:scale-105 focus-visible:ring-4 focus-visible:ring-cyan-200/35 sm:bottom-6 sm:right-6"
+      className="gecko-launcher group fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-40 size-[5rem] rounded-full border border-cyan-200/35 p-1 text-[#b8e47a] transition duration-200 hover:-translate-y-1 hover:scale-105 focus-visible:ring-4 focus-visible:ring-cyan-200/35 sm:bottom-6 sm:right-6"
       onClick={handleMascotClick}
       onPointerMove={trackPointer}
       onPointerLeave={resetPointer}
     >
-      <GeckoMascot state={mascotState} className="h-[3.8rem] w-[4.35rem] max-w-none -translate-x-0.5 drop-shadow-[0_3px_4px_rgba(0,0,0,.24)]" />
+      <GeckoMascot state={mascotState} className="h-[4.15rem] w-[4.8rem] max-w-none object-contain -translate-x-0.5 drop-shadow-[0_3px_4px_rgba(0,0,0,.24)]" />
       <span aria-hidden="true" className="gecko-launcher__bubble gecko-launcher__bubble--one" /><span aria-hidden="true" className="gecko-launcher__bubble gecko-launcher__bubble--two" />
       <span className="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full border border-cyan-100/50 bg-[#baf9d3] text-[#083544]"><MessageCirclePlus aria-hidden="true" className="size-3" /></span>
       <span className="pointer-events-none absolute bottom-full right-0 mb-3 hidden max-w-56 rounded-xl border border-cyan-100/20 bg-[#0b1d29]/90 px-3 py-2 text-left font-mono text-[11px] leading-4 text-[#e8fffa] opacity-0 shadow-xl backdrop-blur-md transition group-hover:-translate-y-1 group-hover:opacity-100 group-focus-visible:-translate-y-1 group-focus-visible:opacity-100 sm:block">{statusText}<span className="ml-2 text-[#a8ffe0]">Ctrl+J</span></span>

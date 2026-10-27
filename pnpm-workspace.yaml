@@ -15,3 +15,7 @@ audit:
 overrides:
   source-map-js: ">=1.2.2"
   "@modelcontextprotocol/sdk": ">=1.31.0"
+  "zod@^4.0.0": "4.6.6"
+  "shadcn@4.20.0>zod": "4.6.6"
+  "body-parser@2": "2.4.0"
+  "undici@7": "7.30.1"

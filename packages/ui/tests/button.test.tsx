@@ -15,18 +15,19 @@ void test("Button composes its shadcn styles onto an accessible child action", (
   assert.match(markup, /href="\/health"/);
 });
 
-void test("GeckoMascot exposes presentation state without an accessibility duplicate", (): void => {
+void test("GeckoMascot uses the supplied PNG asset and keeps the state hook", (): void => {
   const markup = renderToStaticMarkup(<GeckoMascot state="thinking" className="size-10" />);
 
   assert.match(markup, /aria-hidden="true"/);
+  assert.match(markup, /src="\/images\/gecko-mascot\.png"/);
   assert.match(markup, /gecko-mascot--thinking/);
 });
 
-void test("GeckoMascot supports the shared interaction-state variants", (): void => {
+void test("GeckoMascot preserves the shared interaction-state variants for layout hooks", (): void => {
   const happy = renderToStaticMarkup(<GeckoMascot state="happy" />);
   const speaking = renderToStaticMarkup(<GeckoMascot state="speaking" />);
 
   assert.match(happy, /gecko-mascot--happy/);
   assert.match(speaking, /gecko-mascot--speaking/);
-  assert.match(happy, /gecko-mascot__toes/);
+  assert.match(happy, /src="\/images\/gecko-mascot\.png"/);
 });
