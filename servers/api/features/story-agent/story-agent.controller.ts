@@ -106,7 +106,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
         response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, questions: pipeline.questions ?? [], usage: pipeline.usage });
         return;
       }
-      response.status(HTTP_STATUS.internalServerError).json({ runId, status: pipeline.status, error: pipeline.reason ?? "Story generation failed.", usage: pipeline.usage });
+      response.status(HTTP_STATUS.internalServerError).json({ runId, status: pipeline.status, error: pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed.", usage: pipeline.usage });
     } catch (error: unknown) {
       next(error);
     }

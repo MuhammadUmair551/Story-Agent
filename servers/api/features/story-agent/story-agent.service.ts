@@ -36,7 +36,6 @@ const clarifyResponseSchema = z.object({
 });
 const refusalSchema = z.object({ refusal: z.object({ reason: z.string().trim().min(1).max(1_000) }) });
 const generatedStoriesSchema = z.object({ stories: z.array(storySchema) });
-const generatedPlanSchema = z.object({ plan: planSchema });
 const maxRepairOutputCharacters = 12_000;
 const maxRepairErrors = 10;
 const maxRepairErrorCharacters = 500;
@@ -115,9 +114,15 @@ const legacyPlan = (requirement: string, stories: readonly StoryAgentStory[]): S
 });
 
 const validatePlan = (plan: unknown, existingTitles: readonly string[], maxStories: number): readonly string[] => {
-  const parsed = generatedPlanSchema.safeParse({ plan });
+  const parsed = planSchema.safeParse(plan);
   if (!parsed.success) return parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
-  return validateStories(flattenPlan(parsed.data.plan), existingTitles, maxStories);
+  return validateStories(flattenPlan(parsed.data), existingTitles, maxStories);
+};
+
+const planFromCandidate = (candidate: unknown): unknown => {
+  if (typeof candidate !== "object" || candidate === null) return undefined;
+  if ("plan" in candidate) return candidate.plan;
+  return "initiative" in candidate ? candidate : undefined;
 };
 
 const isObjectWithStories = (value: unknown): value is { stories: unknown } =>
@@ -225,11 +230,11 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
         ledger.stages.push(stage("validate", "failed", "Model refused request."));
         return result(ledger, "failed", [], { reason: "model_refusal" });
       }
-      const plan = typeof candidate === "object" && candidate !== null && "plan" in candidate ? candidate.plan : undefined;
+      const plan = planFromCandidate(candidate);
       if (plan !== undefined) {
         errors = validatePlan(plan, gathered.titles, dependencies.budget.maxStories);
         if (errors.length === 0) {
-          const parsedPlan = generatedPlanSchema.parse(candidate).plan;
+          const parsedPlan = planSchema.parse(plan);
           return result(ledger, "draft", [], { plan: parsedPlan, stories: flattenPlan(parsedPlan) });
         }
       } else {

@@ -8,7 +8,9 @@ Create a complete, delivery-ready product hierarchy.
 Return one valid JSON object and no surrounding prose:
 {"plan":{"initiative":{"title":"Checkout confidence","outcome":"Customers can complete checkout with confidence.","epics":[{"title":"Checkout","objective":"Make the order review clear.","features":[{"title":"Order summary","outcome":"Customers can verify their order before payment.","stories":[{"title":"A customer reviews an order summary","intent":"Confirm selected items before paying","acceptanceCriteria":["Given a cart with items, when checkout opens, then the order summary is shown."],"tasks":[{"title":"Render order line items","description":"Show product, quantity, and price in the summary.","effort":"S"}]}]}]}]}}}
 
-For multi-step journeys such as cart, checkout, order, or account flows, prefer multiple independent thin stories when the requirement spans distinct user outcomes. Keep each story focused on one actor and one outcome, and avoid collapsing the entire flow into a single umbrella story.
+For multi-step journeys such as cart, checkout, order, account, or branching quests, prefer multiple independent thin stories when the requirement spans distinct user outcomes. Keep each story focused on one actor and one outcome, and avoid collapsing the entire flow into a single umbrella story.
+
+Keep the plan deliberately compact: use 1 initiative, 1–3 epics, 1–2 features per epic, 1–2 stories per feature, and 1–3 tasks per story. The COMPLETE plan must contain no more than 10 stories total. Choose the highest-value slices rather than trying to model every permutation.
 
 Use this exact nesting with every required key: plan.initiative(title, outcome, epics[]); every epic(title, objective, features[]); every feature(title, outcome, stories[]); every story(title, intent, acceptanceCriteria[], tasks[]); every task(title, description, effort). Task effort must be exactly "S", "M", or "L".
 

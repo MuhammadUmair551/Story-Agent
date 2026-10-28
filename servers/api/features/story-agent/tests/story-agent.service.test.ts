@@ -50,6 +50,27 @@ void test("returns a validated initiative-to-task plan from a hierarchical model
   assert.equal(result.plan.initiative.epics[0]?.features[0]?.stories[0]?.tasks[0]?.effort, "S");
 });
 
+void test("accepts an unwrapped initiative plan from a model", async () => {
+  const plan = { initiative: { title: "Reader continuity", outcome: "Readers resume where they left off.", epics: [{ title: "Reading progress", objective: "Keep chapter progress available.", features: [{ title: "Cross-device resume", outcome: "Resume on another device.", stories: [{ title: "A reader resumes a saved chapter", intent: "Continue reading from the saved location", acceptanceCriteria: ["Given a saved chapter, when a reader opens it on another device, then reading resumes at the saved location."], tasks: [{ title: "Persist reading position", description: "Store the current chapter and location.", effort: "S" }] }] }] }] } };
+  const result = await service([clear, completion(JSON.stringify(plan))]).run({ requirement: "A returning reader saves a chapter and resumes it on another device" });
+
+  assert.equal(result.status, "draft");
+  assert.equal(result.plan?.initiative.title, "Reader continuity");
+});
+
+void test("repairs an over-broad branching-quest plan into the configured story limit", async () => {
+  const planWithStories = (count: number) => ({ initiative: { title: "Quest discovery", outcome: "Players find a quest path.", epics: [{ title: "Discovery", objective: "Reveal a quest.", features: [{ title: "Quest trail", outcome: "Guide a player to the next step.", stories: Array.from({ length: count }, (_, index) => ({ title: `A player follows quest clue ${String(index + 1)}`, intent: "Follow one quest clue", acceptanceCriteria: ["Given an active quest, when a clue is selected, then the next location is shown."], tasks: [{ title: "Show the next clue", description: "Render the next quest location.", effort: "S" }] })) }] }] } });
+  const result = await service([
+    clear,
+    completion(JSON.stringify({ plan: planWithStories(6) })),
+    completion(JSON.stringify({ plan: planWithStories(2) }))
+  ]).run({ requirement: "A player discovers and follows a branching quest" });
+
+  assert.equal(result.status, "draft");
+  assert.equal(result.attempts, 3);
+  assert.equal(result.plan?.initiative.epics[0]?.features[0]?.stories.length, 2);
+});
+
 void test("stops after blocking clarification questions", async () => {
   const result = await service([completion(JSON.stringify({ needsClarification: true, questions: ["Who is the actor?"], assumptions: [] }))]).run({ requirement: "Build it" });
 
@@ -314,5 +335,6 @@ void test("generation and repair prompts specify every delivery-hierarchy field"
     }
     assert.match(prompt, /Return (?:JSON only|one valid JSON object)/);
     assert.match(prompt, /(?:non-empty arrays|at least one implementation task|All collections are non-empty arrays)/i);
+    assert.match(prompt, /no more than 10 stories/i);
   }
 });

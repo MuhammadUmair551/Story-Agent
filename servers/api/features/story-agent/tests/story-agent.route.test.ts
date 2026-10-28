@@ -111,6 +111,13 @@ void test("POST saves failed runs and returns 500", async () => {
   assert.equal(outcome.saved.length, 1);
 });
 
+void test("POST returns the first validation error instead of an opaque validation failure", async () => {
+  const outcome = await request({ ...result("failed"), reason: "validation_failed", validationErrors: ["At most 10 stories are allowed."] });
+
+  assert.equal(outcome.response.status, 500);
+  assert.equal((await outcome.response.json() as { error: string }).error, "At most 10 stories are allowed.");
+});
+
 void test("POST rejects invalid request bodies", async () => {
   const saved: unknown[] = [];
   const app = express();
