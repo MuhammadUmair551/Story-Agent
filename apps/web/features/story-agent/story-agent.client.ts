@@ -4,6 +4,8 @@ import type {
   StoryAgentRunResponse,
   StoryAgentStatus,
   StoryAgentStory,
+  StoryAgentTask,
+  StoryAgentPlan,
   StoryAgentUsage
 } from "./story-agent.types";
 
@@ -91,11 +93,33 @@ const asStories = (value: unknown): StoryAgentStory[] | undefined => {
   return stories;
 };
 
+const asTask = (value: unknown): StoryAgentTask | undefined => {
+  const record = asRecord(value);
+  if (typeof record.title !== "string" || typeof record.description !== "string" || (record.effort !== "S" && record.effort !== "M" && record.effort !== "L")) return undefined;
+  return { title: record.title, description: record.description, effort: record.effort };
+};
+
+const asPlan = (value: unknown): StoryAgentPlan | undefined => {
+  const root = asRecord(value); const initiative = asRecord(root.initiative);
+  const epics = Array.isArray(initiative.epics) ? initiative.epics.map((epicValue) => {
+    const epic = asRecord(epicValue); const features = Array.isArray(epic.features) ? epic.features.map((featureValue) => {
+      const feature = asRecord(featureValue); const stories = Array.isArray(feature.stories) ? feature.stories.map((storyValue) => {
+        const story = asRecord(storyValue); const tasks = Array.isArray(story.tasks) ? story.tasks.map(asTask) : [];
+        return typeof story.title === "string" && typeof story.intent === "string" && asStrings(story.acceptanceCriteria) !== undefined && tasks.every((task) => task !== undefined) && tasks.length > 0 ? { title: story.title, intent: story.intent, acceptanceCriteria: asStrings(story.acceptanceCriteria) ?? [], tasks: tasks as NonNullable<typeof tasks[number]>[] } : undefined;
+      }) : [];
+      return typeof feature.title === "string" && typeof feature.outcome === "string" && stories.every((story) => story !== undefined) && stories.length > 0 ? { title: feature.title, outcome: feature.outcome, stories: stories as NonNullable<typeof stories[number]>[] } : undefined;
+    }) : [];
+    return typeof epic.title === "string" && typeof epic.objective === "string" && features.every((feature) => feature !== undefined) && features.length > 0 ? { title: epic.title, objective: epic.objective, features: features as NonNullable<typeof features[number]>[] } : undefined;
+  }) : [];
+  return typeof initiative.title === "string" && typeof initiative.outcome === "string" && epics.every((epic) => epic !== undefined) && epics.length > 0 ? { initiative: { title: initiative.title, outcome: initiative.outcome, epics: epics as NonNullable<typeof epics[number]>[] } } : undefined;
+};
+
 export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
   const record = asRecord(value);
   const status = asStatus(record.status);
   const stories = asStories(record.stories);
-  const invalidDraft = status === "draft" && stories === undefined;
+  const plan = asPlan(record.plan);
+  const invalidDraft = status === "draft" && stories === undefined && plan === undefined;
 
   return {
     runId: typeof record.runId === "string" ? record.runId : "",
@@ -103,6 +127,7 @@ export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
     requirement: typeof record.requirement === "string" ? record.requirement : "",
     questions: asStrings(record.questions),
     stories,
+    plan,
     usage: asUsage(record.usage),
     error: invalidDraft ? "Saved draft data is incomplete." : typeof record.error === "string" ? record.error : undefined,
     reason: typeof record.reason === "string" ? record.reason : undefined,
@@ -150,6 +175,7 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = fetch) 
         status: run.status,
         questions: run.questions,
         stories: run.stories,
+        plan: run.plan,
         usage: run.usage,
         error: run.error,
         reason: run.reason,
@@ -167,7 +193,7 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = fetch) 
 
       return {
         run: parseStoryAgentRun(payload.run),
-        draft: payload.draft === null ? null : { stories: asStories(draft.stories) ?? [] }
+        draft: payload.draft === null ? null : { stories: asStories(draft.stories) ?? [], ...(asPlan(draft.plan) ? { plan: asPlan(draft.plan) } : {}) }
       };
     }
   };

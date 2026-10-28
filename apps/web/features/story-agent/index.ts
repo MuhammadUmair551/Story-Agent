@@ -1,1 +1,1 @@
-export { StoryAgentWidget } from "./components";
+export { StoryForge } from "./components";

@@ -1,10 +1,10 @@
 import type { ReactElement } from "react";
 import { createApiConfiguration, readWebEnvironment } from "@/config";
-import { WorkspaceFoundation } from "@/features/workspace-foundation";
+import { StoryForge } from "@/features/story-agent";
 
 const HomePage = (): ReactElement => {
   const api = createApiConfiguration(readWebEnvironment());
-  return <WorkspaceFoundation apiBaseUrl={api.baseUrl} />;
+  return <StoryForge apiBaseUrl={api.baseUrl} />;
 };
 
 export default HomePage;

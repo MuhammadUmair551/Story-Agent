@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { StoryAgentClarifications, StoryAgentStory, StoryAgentUsage } from "@workspace/types";
+import type { StoryAgentClarifications, StoryAgentPlan, StoryAgentStory, StoryAgentUsage } from "@workspace/types";
 import { extractJson } from "./story-agent.json.js";
 import { isStoryAgentRouterError, type StoryAgentProviderRouter } from "./story-agent.router.js";
-import { clarificationsSchema, storySchema } from "./story-agent.validation.js";
+import { clarificationsSchema, planSchema, storySchema } from "./story-agent.validation.js";
 import * as clarifyPrompt from "./story-agent.clarify.prompt.js";
 import * as generatePrompt from "./story-agent.generate.prompt.js";
 import * as repairPrompt from "./story-agent.repair.prompt.js";
@@ -14,6 +14,7 @@ export type StoryAgentPipelineResult = Readonly<{
   status: "questions" | "draft" | "failed" | "queued";
   questions?: readonly string[];
   stories?: readonly StoryAgentStory[];
+  plan?: StoryAgentPlan;
   attempts: number;
   usage: StoryAgentUsage;
   providers: readonly string[];
@@ -35,6 +36,7 @@ const clarifyResponseSchema = z.object({
 });
 const refusalSchema = z.object({ refusal: z.object({ reason: z.string().trim().min(1).max(1_000) }) });
 const generatedStoriesSchema = z.object({ stories: z.array(storySchema) });
+const generatedPlanSchema = z.object({ plan: planSchema });
 const maxRepairOutputCharacters = 12_000;
 const maxRepairErrors = 10;
 const maxRepairErrorCharacters = 500;
@@ -77,6 +79,45 @@ export const validateStories = (stories: unknown, existingTitles: readonly strin
     seen.add(title);
   }
   return errors;
+};
+
+const flattenPlan = (plan: StoryAgentPlan): readonly StoryAgentStory[] => plan.initiative.epics.flatMap((epic) => epic.features.flatMap((feature) => feature.stories.map((story) => ({
+  title: story.title,
+  intent: story.intent,
+  epic: epic.title,
+  size: story.tasks.some((task) => task.effort === "L") ? "L" : story.tasks.some((task) => task.effort === "M") ? "M" : "S",
+  acceptanceCriteria: story.acceptanceCriteria,
+  states: [],
+  dependsOn: [],
+  openQuestions: [],
+  sliceRationale: `${feature.title}: ${feature.outcome}`
+}))));
+
+const legacyPlan = (requirement: string, stories: readonly StoryAgentStory[]): StoryAgentPlan => ({
+  initiative: {
+    title: requirement.slice(0, 240), outcome: requirement,
+    epics: Array.from(stories.reduce<Map<string, StoryAgentStory[]>>((groups, story) => {
+      const current = groups.get(story.epic) ?? [];
+      current.push(story);
+      groups.set(story.epic, current);
+      return groups;
+    }, new Map()).values()).map((group) => {
+      const first = group[0];
+      return {
+        title: first?.epic ?? "Delivery", objective: first?.intent ?? requirement,
+        features: [{ title: "Core experience", outcome: first?.intent ?? requirement, stories: group.map((story) => ({
+          title: story.title, intent: story.intent, acceptanceCriteria: story.acceptanceCriteria,
+          tasks: story.acceptanceCriteria.map((criterion) => ({ title: criterion, description: "Implement and verify this acceptance criterion.", effort: story.size }))
+        })) }]
+      };
+    })
+  }
+});
+
+const validatePlan = (plan: unknown, existingTitles: readonly string[], maxStories: number): readonly string[] => {
+  const parsed = generatedPlanSchema.safeParse({ plan });
+  if (!parsed.success) return parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
+  return validateStories(flattenPlan(parsed.data.plan), existingTitles, maxStories);
 };
 
 const isObjectWithStories = (value: unknown): value is { stories: unknown } =>
@@ -184,9 +225,21 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
         ledger.stages.push(stage("validate", "failed", "Model refused request."));
         return result(ledger, "failed", [], { reason: "model_refusal" });
       }
-      const stories = isObjectWithStories(candidate) ? candidate.stories : undefined;
-      errors = validateStories(stories, gathered.titles, dependencies.budget.maxStories);
-      if (errors.length === 0) return result(ledger, "draft", [], { stories: generatedStoriesSchema.parse(candidate).stories });
+      const plan = typeof candidate === "object" && candidate !== null && "plan" in candidate ? candidate.plan : undefined;
+      if (plan !== undefined) {
+        errors = validatePlan(plan, gathered.titles, dependencies.budget.maxStories);
+        if (errors.length === 0) {
+          const parsedPlan = generatedPlanSchema.parse(candidate).plan;
+          return result(ledger, "draft", [], { plan: parsedPlan, stories: flattenPlan(parsedPlan) });
+        }
+      } else {
+        const stories = isObjectWithStories(candidate) ? candidate.stories : undefined;
+        errors = validateStories(stories, gathered.titles, dependencies.budget.maxStories);
+        if (errors.length === 0) {
+          const parsedStories = generatedStoriesSchema.parse(candidate).stories;
+          return result(ledger, "draft", [], { plan: legacyPlan(accepted.requirement, parsedStories), stories: parsedStories });
+        }
+      }
       ledger.stages.push(stage("validate", "failed", errors.join("; ")));
       if (repair === 2) return result(ledger, "failed", errors, { reason: "validation_failed" });
       generated = await request("repair", "generate", repairPrompt.build({

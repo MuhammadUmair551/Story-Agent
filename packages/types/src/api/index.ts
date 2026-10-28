@@ -3,9 +3,14 @@ export type { ApiErrorCode, ApiErrorDetails, ApiErrorResponse } from "./errors/i
 export type { ApiHealthResponse } from "./health/index.js";
 export type {
   StoryAgentClarifications,
+  StoryAgentEpic,
+  StoryAgentFeature,
+  StoryAgentPlan,
+  StoryAgentPlannedStory,
   StoryAgentRequirementInput,
   StoryAgentRunResponse,
   StoryAgentRunStatus,
   StoryAgentStory,
+  StoryAgentTask,
   StoryAgentUsage
 } from "./story-agent/index.js";

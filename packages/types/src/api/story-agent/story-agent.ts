@@ -22,6 +22,39 @@ export type StoryAgentStory = Readonly<{
   sliceRationale: string;
 }>;
 
+export type StoryAgentTask = Readonly<{
+  title: string;
+  description: string;
+  effort: "S" | "M" | "L";
+}>;
+
+export type StoryAgentPlannedStory = Readonly<{
+  title: string;
+  intent: string;
+  acceptanceCriteria: readonly string[];
+  tasks: readonly StoryAgentTask[];
+}>;
+
+export type StoryAgentFeature = Readonly<{
+  title: string;
+  outcome: string;
+  stories: readonly StoryAgentPlannedStory[];
+}>;
+
+export type StoryAgentEpic = Readonly<{
+  title: string;
+  objective: string;
+  features: readonly StoryAgentFeature[];
+}>;
+
+export type StoryAgentPlan = Readonly<{
+  initiative: Readonly<{
+    title: string;
+    outcome: string;
+    epics: readonly StoryAgentEpic[];
+  }>;
+}>;
+
 export type StoryAgentUsage = Readonly<{
   inputTokens: number;
   outputTokens: number;
@@ -34,5 +67,6 @@ export type StoryAgentRunResponse = Readonly<{
   usage: StoryAgentUsage;
   questions?: readonly string[] | undefined;
   stories?: readonly StoryAgentStory[] | undefined;
+  plan?: StoryAgentPlan | undefined;
   error?: string | undefined;
 }>;

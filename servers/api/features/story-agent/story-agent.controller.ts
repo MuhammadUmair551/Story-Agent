@@ -39,6 +39,7 @@ const runDocument = (runId: string, input: Readonly<{ requirement: string; conte
     ...(input.context ? { context: input.context } : {}),
     ...(pipeline.questions ? { questions: pipeline.questions } : {}),
     ...(pipeline.stories ? { stories: pipeline.stories } : {}),
+    ...(pipeline.plan ? { plan: pipeline.plan } : {}),
     usage: pipeline.usage,
     providers: pipeline.providers,
     attempts: pipeline.attempts,
@@ -97,8 +98,8 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       }
       await repository.saveRun(runDocument(runId, input, pipeline, now));
       if (pipeline.status === "draft") {
-        await repository.saveDraft({ runId, stories: pipeline.stories ?? [], createdAt: toIso(now) });
-        response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, stories: pipeline.stories ?? [], usage: pipeline.usage });
+        await repository.saveDraft({ runId, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), createdAt: toIso(now) });
+        response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), usage: pipeline.usage });
         return;
       }
       if (pipeline.status === "questions") {

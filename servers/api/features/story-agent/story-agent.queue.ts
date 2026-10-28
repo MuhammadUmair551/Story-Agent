@@ -18,6 +18,7 @@ const isExpired = (run: StoryAgentRunDocument, now: string): boolean =>
 const resultFields = (result: StoryAgentPipelineResult, now: string): Partial<StoryAgentRunDocument> => ({
   ...(result.questions ? { questions: [...result.questions] } : {}),
   ...(result.stories ? { stories: [...result.stories] } : {}),
+  ...(result.plan ? { plan: result.plan } : {}),
   usage: result.usage,
   providers: [...result.providers],
   attempts: result.attempts,
@@ -50,7 +51,7 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
       try {
         const result = await service.run({ requirement: run.requirement, ...(run.context ? { context: run.context } : {}) });
         if (result.status === "draft") {
-          await repository.saveDraft({ runId: run.runId, stories: result.stories ?? [], createdAt: now });
+          await repository.saveDraft({ runId: run.runId, stories: result.stories ?? [], ...(result.plan ? { plan: result.plan } : {}), createdAt: now });
           await repository.updateRunStatus(run.runId, "draft", resultFields(result, now));
           return;
         }

@@ -1,4 +1,4 @@
-import type { StoryAgentRunStatus, StoryAgentStory, StoryAgentUsage } from "@workspace/types";
+import type { StoryAgentPlan, StoryAgentRunStatus, StoryAgentStory, StoryAgentUsage } from "@workspace/types";
 import type { MongoPersistence } from "../../integrations/index.js";
 import type { StoryAgentStageOutcome } from "./story-agent.service.js";
 
@@ -9,6 +9,7 @@ export type StoryAgentRunDocument = Readonly<Record<string, unknown>> & Readonly
   context?: string | undefined;
   questions?: readonly string[] | undefined;
   stories?: readonly StoryAgentStory[] | undefined;
+  plan?: StoryAgentPlan | undefined;
   usage: StoryAgentUsage;
   providers: readonly string[];
   attempts: number;
@@ -27,6 +28,7 @@ export type StoryAgentRunDocument = Readonly<Record<string, unknown>> & Readonly
 export type StoryAgentDraftDocument = Readonly<Record<string, unknown>> & Readonly<{
   runId: string;
   stories: readonly StoryAgentStory[];
+  plan?: StoryAgentPlan | undefined;
   createdAt: string;
 }>;
 

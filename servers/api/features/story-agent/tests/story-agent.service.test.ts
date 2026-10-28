@@ -40,6 +40,16 @@ void test("returns a validated draft from clarify and generate stages", async ()
   assert.deepEqual(result.usage, { inputTokens: 4, outputTokens: 6, totalTokens: 10 });
 });
 
+void test("returns a validated initiative-to-task plan from a hierarchical model response", async () => {
+  const plan = { initiative: { title: "Better checkout", outcome: "Customers complete checkout confidently.", epics: [{ title: "Checkout", objective: "Make order review clear.", features: [{ title: "Order summary", outcome: "Show the final order before payment.", stories: [{ title: "A customer reviews an order summary", intent: "Confirm selected items before paying", acceptanceCriteria: ["Given items in a cart, when checkout opens, then an order summary is shown."], tasks: [{ title: "Build the summary", description: "Render products, quantities, and prices.", effort: "S" }] }] }] }] } };
+  const result = await service([clear, completion(JSON.stringify({ plan }))]).run({ requirement: "Improve checkout confidence" });
+
+  assert.equal(result.status, "draft");
+  assert.ok(result.plan);
+  assert.equal(result.plan.initiative.title, "Better checkout");
+  assert.equal(result.plan.initiative.epics[0]?.features[0]?.stories[0]?.tasks[0]?.effort, "S");
+});
+
 void test("stops after blocking clarification questions", async () => {
   const result = await service([completion(JSON.stringify({ needsClarification: true, questions: ["Who is the actor?"], assumptions: [] }))]).run({ requirement: "Build it" });
 
@@ -286,7 +296,7 @@ void test("generate prompt encourages multiple thin stories for cart and checkou
   assert.match(prompt, /one actor and one outcome/i);
 });
 
-void test("generation and repair prompts specify every required Story field", async () => {
+void test("generation and repair prompts specify every delivery-hierarchy field", async () => {
   const { build: buildGeneratePrompt } = await import("../story-agent.generate.prompt.js");
   const { build: buildRepairPrompt } = await import("../story-agent.repair.prompt.js");
   const clarifications = { questions: [], assumptions: ["Use a standard checkout flow."] };
@@ -294,15 +304,15 @@ void test("generation and repair prompts specify every required Story field", as
   const repairPrompt = buildRepairPrompt({
     requirement: "Create checkout stories",
     clarifications,
-    previousOutput: "{\"stories\":[]}",
-    validationErrors: ["stories.0.openQuestions: expected array"]
+    previousOutput: "{\"plan\":{}}",
+    validationErrors: ["plan.initiative.epics: expected array"]
   });
 
   for (const prompt of [generatePrompt, repairPrompt]) {
-    for (const field of ["title", "intent", "epic", "size", "acceptanceCriteria", "states", "dependsOn", "openQuestions", "sliceRationale"]) {
+    for (const field of ["initiative", "epics", "features", "stories", "tasks", "title", "intent", "acceptanceCriteria", "effort"]) {
       assert.ok(prompt.includes(field), `prompt must explicitly require ${field}`);
     }
     assert.match(prompt, /Return (?:JSON only|one valid JSON object)/);
-    assert.match(prompt, /(?:Use \[\] for states, dependsOn, or openQuestions when empty|use \[\] when none are known)/);
+    assert.match(prompt, /(?:non-empty arrays|at least one implementation task|All collections are non-empty arrays)/i);
   }
 });

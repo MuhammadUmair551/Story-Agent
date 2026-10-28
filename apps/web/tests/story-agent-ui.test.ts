@@ -69,3 +69,12 @@ test("turns malformed persisted drafts into a controlled failed state", () => {
   assert.equal(parsed.status, "failed");
   assert.equal(parsed.error, "Saved draft data is incomplete.");
 });
+
+test("preserves a nested initiative delivery plan from persisted data", () => {
+  const parsed = parseStoryAgentRun({
+    runId: "plan-123", status: "draft", requirement: "Make checkout easier",
+    plan: { initiative: { title: "Checkout confidence", outcome: "Customers complete orders confidently.", epics: [{ title: "Checkout", objective: "Clarify payment review.", features: [{ title: "Order summary", outcome: "Show the final order.", stories: [{ title: "A customer reviews an order summary", intent: "Confirm items before payment", acceptanceCriteria: ["Given a cart, when checkout opens, then a summary is visible."], tasks: [{ title: "Render order lines", description: "Show products, quantities, and prices.", effort: "S" }] }] }] }] } }
+  });
+
+  assert.equal(parsed.plan?.initiative.epics[0]?.features[0]?.stories[0]?.tasks[0]?.title, "Render order lines");
+});
