@@ -100,9 +100,23 @@ Queued runs are claimed atomically with a lock and next-attempt metadata. If a q
 - diagnostics do not leak raw provider output, prompt payloads, or credentials;
 - secrets remain configured only in environment values and are not committed into the repository.
 
-## 11. Logging and evaluation
+## 11. Logging, observability, and evaluation
 
-The service records stages, provider names, usage totals, and reasons for the run. The repository’s deterministic tests are the primary quality gate for contract correctness, while the live evaluation script is kept separate and only treated as a meaningful result when a fixture actually ran.
+The service records stages, provider names, usage totals, and reasons for the run. Pino
+emits structured local logs with request/trace correlation. OpenTelemetry spans cover
+HTTP handling, requirement/context/output validation, generation, provider requests,
+queue admission/claim, and run persistence. MongoDB adapter operations have latency and
+failure metrics. Metrics use route templates,
+provider/model configuration, status classes, queue outcomes, and bounded operation
+names; prompts, contexts, generated output, IDs, and raw URLs are not metric labels.
+External OTLP export is optional and requires host configuration. Grafana dashboards and
+alert templates live in `enablers/observability`; exporter delivery has not been verified
+without a configured account. Direct app log shipping to Grafana Loki is not enabled
+pending review of a safe field allowlist and destination.
+
+The repository’s deterministic tests are the primary quality gate for contract
+correctness, while the live evaluation script is kept separate and only treated as a
+meaningful result when a fixture actually ran.
 
 ## 12. Testing strategy, current limits, and future improvements
 

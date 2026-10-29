@@ -34,7 +34,13 @@ export const createErrorHandler = ({ logger }: { logger: Logger }): ErrorRequest
       response.status(error.status).json(body);
       return;
     }
-    logger.error("Unhandled API error.", { error: error instanceof Error ? error.message : String(error) });
+    logger.error("Unhandled API error.", {
+      errorCode: ERROR_CODES.internal,
+      ...(error instanceof Error ? {
+        errorName: "Error"
+      } : { errorName: "UnknownError" }),
+      requestId: response.getHeader("x-request-id")
+    });
     const body: ApiErrorResponse = {
       error: { code: ERROR_CODES.internal, message: ERROR_MESSAGES.internal }
     };

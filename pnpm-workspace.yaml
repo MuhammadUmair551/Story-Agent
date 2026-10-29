@@ -7,15 +7,17 @@ packages:
 
 allowBuilds:
   esbuild: true
+  # Optional version-scheme warning only; protobufjs runtime needs no generated files.
+  protobufjs: false
   unrs-resolver: true
 
 audit:
   level: high
 
 overrides:
+  "@dotenvx/dotenvx@1.75.1>systeminformation": "5.33.16"
   source-map-js: ">=1.2.2"
   "@modelcontextprotocol/sdk": ">=1.31.0"
   "zod@^4.0.0": "4.6.6"
-  "shadcn@4.20.0>zod": "4.6.6"
   "body-parser@2": "2.4.0"
   "undici@7": "7.30.1"

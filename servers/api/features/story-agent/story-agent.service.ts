@@ -6,6 +6,7 @@ import { clarificationsSchema, planSchema, storySchema } from "./story-agent.val
 import * as clarifyPrompt from "./story-agent.clarify.prompt.js";
 import * as generatePrompt from "./story-agent.generate.prompt.js";
 import * as repairPrompt from "./story-agent.repair.prompt.js";
+import { recordValidationEvent, withStoryStageSpan } from "./story-agent.telemetry.js";
 
 export type StoryAgentExistingItem = Readonly<{ level: "initiative" | "epic" | "feature" | "story"; title: string }>;
 export type StoryAgentBudget = Readonly<{ maxCalls: number; maxTotalTokens: number; timeoutMs: number; contextTokenLimit: number; maxStories: number }>;
@@ -187,13 +188,13 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
     const startedAt = dependencies.now();
     let accepted: Readonly<{ requirement: string; context?: string | undefined }>;
     try {
-      accepted = intake(input);
+      accepted = withStoryStageSpan("story_agent.requirement.validate", () => intake(input));
       ledger.stages.push(stage("intake", "completed"));
     } catch (error: unknown) {
       ledger.stages.push(stage("intake", "failed", "Invalid requirement input."));
       return result(ledger, "failed", [], { reason: error instanceof Error ? error.message : "invalid_input" });
     }
-    const gathered = gatherContext(accepted.requirement, input.existingItems ?? [], dependencies.budget.contextTokenLimit);
+    const gathered = withStoryStageSpan("story_agent.context.gather", () => gatherContext(accepted.requirement, input.existingItems ?? [], dependencies.budget.contextTokenLimit));
     ledger.stages.push(stage("gatherContext", "completed"));
     const context = [accepted.context, gathered.text].filter(Boolean).join("\n");
     const clarify = await request("clarify", "fast", clarifyPrompt.build({ requirement: accepted.requirement, ...(context ? { context } : {}) }), ledger, startedAt, dependencies);
@@ -232,21 +233,25 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
       }
       const plan = planFromCandidate(candidate);
       if (plan !== undefined) {
-        errors = validatePlan(plan, gathered.titles, dependencies.budget.maxStories);
+        errors = withStoryStageSpan("story_agent.output.validate", () => validatePlan(plan, gathered.titles, dependencies.budget.maxStories), (validationErrors) => validationErrors.length === 0 ? "passed" : "failed");
         if (errors.length === 0) {
+          if (repair > 0) recordValidationEvent("repair_succeeded");
           const parsedPlan = planSchema.parse(plan);
           return result(ledger, "draft", [], { plan: parsedPlan, stories: flattenPlan(parsedPlan) });
         }
       } else {
         const stories = isObjectWithStories(candidate) ? candidate.stories : undefined;
-        errors = validateStories(stories, gathered.titles, dependencies.budget.maxStories);
+        errors = withStoryStageSpan("story_agent.output.validate", () => validateStories(stories, gathered.titles, dependencies.budget.maxStories), (validationErrors) => validationErrors.length === 0 ? "passed" : "failed");
         if (errors.length === 0) {
+          if (repair > 0) recordValidationEvent("repair_succeeded");
           const parsedStories = generatedStoriesSchema.parse(candidate).stories;
           return result(ledger, "draft", [], { plan: legacyPlan(accepted.requirement, parsedStories), stories: parsedStories });
         }
       }
       ledger.stages.push(stage("validate", "failed", errors.join("; ")));
+      recordValidationEvent("failed");
       if (repair === 2) return result(ledger, "failed", errors, { reason: "validation_failed" });
+      recordValidationEvent("repair_attempt");
       generated = await request("repair", "generate", repairPrompt.build({
         requirement: accepted.requirement,
         clarifications,

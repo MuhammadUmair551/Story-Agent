@@ -1,3 +1,5 @@
+import { recordActiveRun } from "./story-agent.telemetry.js";
+
 export type StoryAgentAdmission =
   | Readonly<{ kind: "accepted"; release: () => void }>
   | Readonly<{ kind: "queued" }>
@@ -62,6 +64,7 @@ export const createStoryAgentCapacity = ({
       window.count += 1;
       if (activeRuns >= maxConcurrentRuns) return Object.freeze({ kind: "queued" });
       activeRuns += 1;
+      recordActiveRun(1);
       let released = false;
       return Object.freeze({
         kind: "accepted",
@@ -69,12 +72,14 @@ export const createStoryAgentCapacity = ({
           if (released) return;
           released = true;
           activeRuns -= 1;
+          recordActiveRun(-1);
         }
       });
     },
     acquireBackground: () => {
       if (activeRuns >= maxConcurrentRuns) return Object.freeze({ kind: "queued" });
       activeRuns += 1;
+      recordActiveRun(1);
       let released = false;
       return Object.freeze({
         kind: "accepted",
@@ -82,6 +87,7 @@ export const createStoryAgentCapacity = ({
           if (released) return;
           released = true;
           activeRuns -= 1;
+          recordActiveRun(-1);
         }
       });
     }

@@ -2,6 +2,7 @@ import type { Logger } from "@workspace/logging";
 import type { StoryAgentRepository, StoryAgentRunDocument } from "./story-agent.repository.js";
 import type { StoryAgentPipelineResult } from "./story-agent.service.js";
 import type { StoryAgentCapacity } from "./story-agent.capacity.js";
+import { recordQueueEvent, recordQueueProcessing, recordQueueWait, setQueueSnapshot, withStorySpan } from "./story-agent.telemetry.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: Readonly<{ requirement: string; context?: string | undefined }>) => Promise<StoryAgentPipelineResult> }>;
@@ -42,10 +43,21 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
     try {
       const startedAt = clock.now();
       const now = toIso(startedAt);
-      const run = await repository.claimQueuedRun(now, toIso(startedAt + lockDurationMs));
+      const queueStats = await repository.getQueueStats?.().catch(() => undefined);
+      if (queueStats) setQueueSnapshot(queueStats.depth, queueStats.oldestCreatedAt ? startedAt - new Date(queueStats.oldestCreatedAt).getTime() : 0);
+      const run = await withStorySpan("story_agent.queue.claim", {}, async (span) => {
+        const claimed = await repository.claimQueuedRun(now, toIso(startedAt + lockDurationMs));
+        span.setAttribute("outcome", claimed ? "claimed" : "empty");
+        return claimed;
+      }, (claimed) => claimed ? "claimed" : "empty");
       if (!run) return;
+      recordQueueEvent("claimed");
+      recordQueueWait(startedAt - new Date(run.createdAt).getTime());
+      const processingStartedAt = clock.now();
       if (isExpired(run, now)) {
         await repository.updateRunStatus(run.runId, "failed", { reason: "expired", error: "expired", ...clearQueueFields, updatedAt: now });
+        recordQueueEvent("expired");
+        recordQueueProcessing(clock.now() - processingStartedAt, "failed");
         return;
       }
       try {
@@ -53,21 +65,31 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
         if (result.status === "draft") {
           await repository.saveDraft({ runId: run.runId, stories: result.stories ?? [], ...(result.plan ? { plan: result.plan } : {}), createdAt: now });
           await repository.updateRunStatus(run.runId, "draft", resultFields(result, now));
+          recordQueueEvent("completed");
+          recordQueueProcessing(clock.now() - processingStartedAt, "draft");
           return;
         }
         if (result.status === "questions") {
           await repository.updateRunStatus(run.runId, "questions", resultFields(result, now));
+          recordQueueEvent("completed");
+          recordQueueProcessing(clock.now() - processingStartedAt, "questions");
           return;
         }
         if (result.status === "queued") {
           await repository.updateRunStatus(run.runId, "queued", { ...resultFields(result, now), nextAttemptAt: toIso(startedAt + intervalMs) });
+          recordQueueEvent("retry");
+          recordQueueProcessing(clock.now() - processingStartedAt, "queued");
           return;
         }
         await repository.updateRunStatus(run.runId, "failed", resultFields(result, now));
+        recordQueueEvent("failed");
+        recordQueueProcessing(clock.now() - processingStartedAt, "failed");
       } catch (error: unknown) {
         const reason = error instanceof Error ? error.message : "queue_processing_failed";
-        logger.error("Story Agent queue run failed.", { runId: run.runId, reason });
+        logger.error("Story Agent queue run failed.", { runId: run.runId, reasonCode: "queue_processing_failed" });
         await repository.updateRunStatus(run.runId, "failed", { reason, error: reason, ...clearQueueFields, updatedAt: now });
+        recordQueueEvent("failed");
+        recordQueueProcessing(clock.now() - processingStartedAt, "failed");
       }
     } finally {
       admission?.release();
@@ -80,7 +102,9 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
     processNext,
     start: (): void => {
       if (timer) return;
-      timer = setInterval(() => { void processNext(); }, intervalMs);
+      timer = setInterval(() => {
+        void processNext().catch(() => { logger.error("Story Agent queue poll failed.", { reasonCode: "queue_poll_failed" }); });
+      }, intervalMs);
     },
     stop: (): void => {
       if (!timer) return;

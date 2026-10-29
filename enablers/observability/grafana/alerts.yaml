@@ -1,0 +1,93 @@
+# File provisioning for operator-managed Grafana. In Grafana Cloud, recreate the
+# queries and thresholds in the alerting UI; filesystem provisioning is unsupported.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: story-agent-api
+    folder: Story Agent
+    interval: 1m
+    rules:
+      - uid: story-agent-api-errors
+        title: Story Agent API 5xx rate elevated
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(rate(http_server_request_count_total{service_name="story-agent-api",http_response_status_class="5xx"}[10m])) / clamp_min(sum(rate(http_server_request_count_total{service_name="story-agent-api"}[10m])), 0.001) > 0.05 and sum(rate(http_server_request_count_total{service_name="story-agent-api"}[10m])) > 0.05
+              instant: true
+        for: 10m
+        annotations:
+          summary: API 5xx share remains above 5% for 10 minutes.
+      - uid: story-agent-api-latency
+        title: Story Agent API p95 latency high
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_milliseconds_bucket{service_name="story-agent-api"}[10m]))) > 2000
+              instant: true
+        for: 10m
+        annotations:
+          summary: API p95 remains above 2 seconds for 10 minutes.
+      - uid: story-agent-queue-backlog
+        title: Story Agent queue age high
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: story_agent_queue_oldest_age_milliseconds{service_name="story-agent-api"} > 600000
+              instant: true
+        for: 5m
+        annotations:
+          summary: Oldest queued run is more than 10 minutes old.
+      - uid: story-agent-provider-errors
+        title: Story Agent provider error rate elevated
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(rate(story_agent_llm_request_count_total{service_name="story-agent-api",outcome="error"}[10m])) / clamp_min(sum(rate(story_agent_llm_request_count_total{service_name="story-agent-api"}[10m])), 0.001) > 0.25 and sum(rate(story_agent_llm_request_count_total{service_name="story-agent-api"}[10m])) > 0.05
+              instant: true
+        for: 10m
+        annotations:
+          summary: More than one quarter of LLM requests have failed for 10 minutes.
+      - uid: story-agent-mongodb-errors
+        title: Story Agent MongoDB operations failing
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(rate(mongodb_operation_failure_count_total{service_name="story-agent-api"}[10m])) > 0.1
+              instant: true
+        for: 5m
+        annotations:
+          summary: MongoDB operation failures have been sustained for 5 minutes.
+      - uid: story-agent-capacity
+        title: Story Agent run capacity saturated
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: story_agent_active_runs{service_name="story-agent-api"} >= 2
+              instant: true
+        for: 15m
+        annotations:
+          summary: All default run slots have been occupied for 15 minutes.

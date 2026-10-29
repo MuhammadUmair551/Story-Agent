@@ -40,6 +40,7 @@ export type StoryAgentRepository = Readonly<{
   saveDraft: (document: StoryAgentDraftDocument) => Promise<void>;
   getDraftByRun: (runId: string) => Promise<StoryAgentDraftDocument | null>;
   countQueuedRuns: () => Promise<number>;
+  getQueueStats?: () => Promise<Readonly<{ depth: number; oldestCreatedAt?: string | undefined }>>;
   claimQueuedRun: (now: string, lockedUntil: string) => Promise<StoryAgentRunDocument | null>;
   ensureIndexes: () => Promise<void>;
 }>;
@@ -57,6 +58,13 @@ export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepo
     saveDraft: async (document): Promise<void> => { await drafts.insertOne(document); },
     getDraftByRun: async (runId): Promise<StoryAgentDraftDocument | null> => await drafts.findOne({ runId }),
     countQueuedRuns: async (): Promise<number> => await runs.countDocuments({ status: "queued" }),
+    getQueueStats: async () => {
+      const [depth, oldest] = await Promise.all([
+        runs.countDocuments({ status: "queued" }),
+        runs.find({ status: "queued" }, { sort: { createdAt: 1 }, limit: 1 })
+      ]);
+      return Object.freeze({ depth, ...(oldest[0] ? { oldestCreatedAt: oldest[0].createdAt } : {}) });
+    },
     claimQueuedRun: async (now, lockedUntil): Promise<StoryAgentRunDocument | null> => await runs.findOneAndUpdate({
       status: "queued",
       nextAttemptAt: { $lte: now },

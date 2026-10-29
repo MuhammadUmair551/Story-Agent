@@ -17,6 +17,13 @@ is introduced only for meaningful domain complexity; role folders are not the de
 Functional composition, immutable data, pure functions where practical, and explicit
 dependencies are the repository-wide programming model.
 
+The control plane invokes the repository-pinned pnpm through Corepack's Node entry point
+for declared workspace scripts and audit tools. It does not rely on a global pnpm shim
+inside lifecycle PATHs. Structured tool arguments use shell-free execution; trusted
+repository task strings retain shell behavior for quoting, globs and compound commands.
+Missing Corepack fails explicitly. Root lifecycle delegation also names Corepack so the
+package-manager version guard remains effective across Windows shells and CI.
+
 The M03 control plane includes affected workspace-unit and task selection,
 dependency-aware parallel execution, local cache invalidation across source,
 dependencies, configuration, and selected environment values, reusable architecture

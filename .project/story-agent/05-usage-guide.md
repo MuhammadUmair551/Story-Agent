@@ -16,6 +16,11 @@ STORY_AGENT_MAX_REQUESTS_PER_WINDOW=6
 STORY_AGENT_REQUEST_WINDOW_MS=60000
 STORY_AGENT_MAX_TRACKED_CLIENTS=1000
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:4000
+
+# Optional OTLP/HTTP export; local logs remain available without these values.
+OTEL_EXPORTER_OTLP_ENDPOINT=
+OTEL_EXPORTER_OTLP_HEADERS=
+OTEL_SERVICE_NAME=story-agent-api
 ```
 
 MongoDB must permit creation of `story_agent_runs` and `story_agent_drafts` collections/indexes.
@@ -62,6 +67,11 @@ Draft/questions return `200`; queued returns `202`; failed returns `500`; valida
 The API applies lightweight process-local backpressure: only `STORY_AGENT_MAX_CONCURRENT_RUNS` model runs proceed at once (including queue retries), while additional accepted requests become durable queued runs. One direct client address gets at most `STORY_AGENT_MAX_REQUESTS_PER_WINDOW` submissions in `STORY_AGENT_REQUEST_WINDOW_MS`; tracked addresses are bounded by `STORY_AGENT_MAX_TRACKED_CLIENTS`. Defaults are `2`, `6`, `60000`, and `1000` respectively. Queue admission keeps the existing durable queue maximum of 20 even when many requests arrive together. Tune these values against provider quotas and the API instance's memory/CPU; higher is not automatically better.
 
 This is intentionally process-local protection. It caps expensive work and lets the existing queue recover safely; it does not route traffic or coordinate separate API processes. Do not cache generated stories across users: requirements and their persisted histories are user-specific. The run-history and queue-claim MongoDB indexes, plus a direct MongoDB queue count rather than loading every queued run, are the relevant server-side read optimizations.
+
+The MongoDB queue is durable, but its polling worker runs inside this long-lived API
+process. Do not deploy this API as serverless functions or on a host that sleeps while
+queued processing must continue. See `enablers/observability/README.md` for the current
+Vercel frontend + persistent API host recommendation and telemetry setup.
 
 ## Troubleshooting
 
