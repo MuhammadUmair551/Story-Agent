@@ -6,15 +6,16 @@ import { createStoryAgentRoutes, type StoryAgentRouteDependencies } from "../fea
 import { apiRuntime } from "../constants/index.js";
 import { createHealthRoutes } from "../features/health/index.js";
 import { createCorsMiddleware, createErrorHandler, createNotFoundHandler } from "../middleware/index.js";
+import { createHttpTelemetry } from "./http-telemetry.js";
 
 type AppDependencies = Readonly<{ config: ApiConfig; logger: Logger; persistence: MongoPersistence; storyAgentRouteDependencies?: StoryAgentRouteDependencies | undefined }>;
 
 export const createApp = ({ config, logger, persistence, storyAgentRouteDependencies }: AppDependencies): Express => {
   const app = express();
   app.disable("x-powered-by");
+  app.use(createHttpTelemetry());
   app.use(createHttpLogger({
-    logger,
-    format: config.environment === "production" ? "combined" : "dev"
+    logger
   }));
   app.use(createCorsMiddleware({ origin: config.webOrigin }));
   app.use(express.json({ limit: apiRuntime.jsonBodyLimit }));

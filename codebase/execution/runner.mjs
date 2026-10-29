@@ -2,21 +2,31 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fingerprintTask, hasReusableTaskResult, recordTaskResult } from "../cache/task-cache.mjs";
 import { createTaskResult } from "../contracts/control-plane.mjs";
+import { runToolCommand } from "../tools/command-runner.mjs";
 
-const runCommand = ({ command, cwd, captureOutput }) => new Promise((resolve, reject) => {
-  const child = spawn(command, {
-    cwd,
-    shell: true,
-    env: process.env,
-    stdio: captureOutput ? ["ignore", "pipe", "pipe"] : "inherit"
+const runCommand = async ({ command, cwd, captureOutput }) => {
+  const pnpmTask = command.match(/^pnpm\s+(run\s+[\w:.-]+|test)$/);
+  if (pnpmTask) {
+    return await runToolCommand({ command: "pnpm", args: pnpmTask[1].split(/\s+/), cwd, captureOutput });
+  }
+  // Repository-owned shell task strings can contain quotes, globs or operators.
+  // Keep those semantics; route their leading package-manager call through Corepack.
+  if (/^pnpm\s/.test(command)) command = `corepack ${command}`;
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      env: process.env,
+      stdio: captureOutput ? ["ignore", "pipe", "pipe"] : "inherit"
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (exitCode, signal) => resolve({ exitCode: exitCode ?? 1, signal, stdout, stderr }));
   });
-  let stdout = "";
-  let stderr = "";
-  child.stdout?.on("data", (chunk) => { stdout += chunk; });
-  child.stderr?.on("data", (chunk) => { stderr += chunk; });
-  child.on("error", reject);
-  child.on("close", (exitCode, signal) => resolve({ exitCode: exitCode ?? 1, signal, stdout, stderr }));
-});
+};
 
 const executeTask = async ({ workspace, task, captureOutput, dependencyFingerprints, ignoredDirectories, commandRunner }) => {
   const startedAt = new Date().toISOString();
@@ -54,8 +64,8 @@ const executeTask = async ({ workspace, task, captureOutput, dependencyFingerpri
     task: task.id,
     status: commandResult.exitCode === 0 ? "passed" : "failed",
     startedAt,
-    durationMs: Date.now() - started,
-    ...commandResult
+    ...commandResult,
+    durationMs: Date.now() - started
   });
 };
 

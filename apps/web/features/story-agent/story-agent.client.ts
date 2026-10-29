@@ -148,7 +148,12 @@ const getErrorMessage = (payload: unknown): string => {
 };
 
 const request = async (fetcher: Fetch, url: string, init?: RequestInit): Promise<unknown> => {
-  const response = await fetcher(url, init);
+  const requestId = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const headers = new Headers(init?.headers);
+  headers.set("x-request-id", requestId);
+  const response = await fetcher(url, { ...init, headers });
   const payload = await readJson(response);
 
   if (!response.ok) {

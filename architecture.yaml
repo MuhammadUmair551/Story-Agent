@@ -124,7 +124,7 @@
     "registryFirst": true,
     "registryConfig": "components.json",
     "registryCliPackage": "shadcn",
-    "registryCliVersion": "4.20.0",
+    "registryCliVersion": "4.22.0",
     "registryAddScript": "ui:add",
     "registryAddAllScript": "ui:add:all",
     "registryAliases": {

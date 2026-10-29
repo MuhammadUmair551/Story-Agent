@@ -71,6 +71,31 @@ void test("requires runtime values from the environment", () => {
   assert.throws(() => readApiEnvironment({}), ZodError);
 });
 
+void test("accepts optional OTLP settings and rejects malformed endpoints", () => {
+  const environment = readApiEnvironment({
+    NODE_ENV: "test", API_HOST: "127.0.0.1", API_PORT: "4000", WEB_ORIGIN: "http://localhost:3000", LOG_LEVEL: "silent"
+  });
+  assert.equal(environment.OTEL_EXPORTER_OTLP_ENDPOINT, undefined);
+  assert.throws(() => readApiEnvironment({
+    NODE_ENV: "test", API_HOST: "127.0.0.1", API_PORT: "4000", WEB_ORIGIN: "http://localhost:3000", LOG_LEVEL: "silent",
+    OTEL_EXPORTER_OTLP_ENDPOINT: "not-a-url"
+  }), ZodError);
+});
+
+void test("accepts a hosting platform PORT when API_PORT is not set", () => {
+  const environment = readApiEnvironment({
+    NODE_ENV: "production", API_HOST: "0.0.0.0", PORT: "8080", WEB_ORIGIN: "https://web.example.test", LOG_LEVEL: "info"
+  });
+  assert.equal(environment.API_PORT, 8080);
+});
+
+void test("hosting platform PORT takes precedence over API_PORT", () => {
+  const environment = readApiEnvironment({
+    NODE_ENV: "production", API_HOST: "0.0.0.0", PORT: "8080", API_PORT: "4000", WEB_ORIGIN: "https://web.example.test", LOG_LEVEL: "info"
+  });
+  assert.equal(environment.API_PORT, 8080);
+});
+
 
 void test("loads the named, legacy fallback, and Ollama alias providers", () => {
   const environment = readApiEnvironment({

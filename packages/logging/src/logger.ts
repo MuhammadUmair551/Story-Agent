@@ -4,6 +4,7 @@ import type { Logger, LogContext, LogLevel } from "./types.js";
 
 type CreateLoggerOptions = Readonly<{
   service: string;
+  environment?: string;
   level?: LogLevel;
   format?: "json" | "pretty";
   colorize?: boolean;
@@ -18,6 +19,7 @@ const write = (
 
 export const createLogger = ({
   service,
+  environment,
   level = "info",
   format = "json",
   colorize = process.stdout.isTTY,
@@ -26,8 +28,16 @@ export const createLogger = ({
   const options: LoggerOptions = {
     name: service,
     level,
-    base: { service },
-    timestamp: pino.stdTimeFunctions.isoTime
+    base: { service, ...(environment ? { environment } : {}) },
+    timestamp: pino.stdTimeFunctions.isoTime,
+    redact: {
+      paths: [
+        "req.headers.authorization", "req.headers.cookie", "headers.authorization", "headers.cookie",
+        "authorization", "cookie", "password", "apiKey", "api_key", "token", "secret",
+        "*.apiKey", "*.api_key", "*.token", "*.secret", "*.password"
+      ],
+      censor: "[REDACTED]"
+    }
   };
   const output = format === "pretty"
     ? pretty({

@@ -30,6 +30,16 @@ void test("processes a claimed run once and saves its draft", async () => {
   assert.equal(updates[0]?.status, "draft");
 });
 
+void test("queue monitoring failure does not prevent processing persisted work", async () => {
+  const updates: Array<{ status: string; extra: unknown }> = [];
+  const queue = createStoryAgentQueue({
+    repository: { ...repository(queuedRun(), updates), getQueueStats: async () => { throw new Error("monitoring unavailable"); } },
+    service: { run: async () => pipeline("draft") }, logger, clock: { now: () => 0 }, intervalMs: 120_000
+  });
+  await queue.processNext();
+  assert.equal(updates[0]?.status, "draft");
+});
+
 void test("reschedules providers-unavailable runs", async () => {
   const updates: Array<{ status: string; extra: unknown }> = [];
   const queue = createStoryAgentQueue({ repository: repository(queuedRun(), updates), service: { run: async () => pipeline("queued") }, logger, clock: { now: () => 0 }, intervalMs: 120_000 });

@@ -23,7 +23,7 @@ type ProviderEnvironment = Readonly<{
 const providerEnvironmentSchema = z.object({
   baseUrl: z.url(),
   apiKey: z.string().min(1),
-  model: z.string().min(1),
+  model: z.string().min(1).max(128),
   timeoutMs: z.number().int().positive().optional()
 });
 

@@ -3,7 +3,7 @@
   "type": "package",
   "description": "Reusable structured application and HTTP logging capability.",
   "internalDependencies": ["eslint-config", "tsconfig"],
-  "externalDependencies": ["morgan", "pino", "pino-pretty"],
+  "externalDependencies": ["@opentelemetry/api", "morgan", "pino", "pino-pretty"],
   "capabilities": ["application-logging", "http-logging"],
   "tasks": {
     "build": { "command": "pnpm run build", "outputs": ["dist"], "cache": true },

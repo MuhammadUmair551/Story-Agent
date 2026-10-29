@@ -42,4 +42,7 @@ export type ValidatedApiEnvironment = Readonly<{
   STORY_AGENT_MAX_REQUESTS_PER_WINDOW?: number | undefined;
   STORY_AGENT_REQUEST_WINDOW_MS?: number | undefined;
   STORY_AGENT_MAX_TRACKED_CLIENTS?: number | undefined;
+  OTEL_EXPORTER_OTLP_ENDPOINT?: string | undefined;
+  OTEL_EXPORTER_OTLP_HEADERS?: string | undefined;
+  OTEL_SERVICE_NAME?: string | undefined;
 }>;

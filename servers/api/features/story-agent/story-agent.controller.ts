@@ -6,6 +6,7 @@ import type { StoryAgentCapacity } from "./story-agent.capacity.js";
 import { requirementInputSchema } from "./story-agent.validation.js";
 import type { StoryAgentRepository, StoryAgentRunDocument } from "./story-agent.repository.js";
 import type { StoryAgentPipelineResult } from "./story-agent.service.js";
+import { recordAdmission, withStorySpan, withStoryStageSpan } from "./story-agent.telemetry.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: Readonly<{ requirement: string; context?: string | undefined }>) => Promise<StoryAgentPipelineResult> }>;
@@ -63,7 +64,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
     await previous;
     try {
       if (await repository.countQueuedRuns() >= 20) return false;
-      await repository.saveRun(runDocument(runId, input, pipeline, now));
+      await withStorySpan("story_agent.run.persist", { "story_agent.status": pipeline.status }, async () => { await repository.saveRun(runDocument(runId, input, pipeline, now)); });
       return true;
     } finally { release?.(); }
   };
@@ -72,11 +73,16 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
     try {
       const input = requirementInputSchema.parse(request.body);
       if (await repository.countQueuedRuns() >= 20) {
+        recordAdmission("queue_full");
         response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Story Agent queue is full. Please try again shortly." });
         return;
       }
-      const admission = capacity.acquire(request.socket.remoteAddress ?? "unknown");
+      const admission = withStoryStageSpan("story_agent.capacity.admission", () => {
+        const decision = capacity.acquire(request.socket.remoteAddress ?? "unknown");
+        return decision;
+      }, (decision) => decision.kind);
       if (admission.kind === "rate_limited") {
+        recordAdmission("rate_limited");
         response.status(HTTP_STATUS.tooManyRequests).json({ error: "Too many Story Agent requests. Please try again shortly.", retryAfterMs: admission.retryAfterMs });
         return;
       }
@@ -86,6 +92,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
           try { return await service.run(input); }
           finally { admission.release(); }
         })();
+      recordAdmission(admission.kind === "queued" ? "queued" : "accepted");
       const runId = createRunId();
       const now = clock.now();
       if (pipeline.status === "queued") {
@@ -96,7 +103,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
         response.status(HTTP_STATUS.accepted).json({ runId, status: pipeline.status, message: "Providers are unavailable; the run is queued for retry." });
         return;
       }
-      await repository.saveRun(runDocument(runId, input, pipeline, now));
+      await withStorySpan("story_agent.run.persist", { "story_agent.status": pipeline.status }, async () => { await repository.saveRun(runDocument(runId, input, pipeline, now)); });
       if (pipeline.status === "draft") {
         await repository.saveDraft({ runId, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), createdAt: toIso(now) });
         response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), usage: pipeline.usage });

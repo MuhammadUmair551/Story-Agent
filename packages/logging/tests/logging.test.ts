@@ -20,6 +20,18 @@ void test("writes machine-readable JSON application logs", () => {
   } : null, { service: "test-service", message: "runtime ready", port: 4000 });
 });
 
+void test("redacts credential-shaped structured fields", () => {
+  const messages: string[] = [];
+  const destination: DestinationStream = { write: (message: string) => { messages.push(message); } };
+  const logger = createLogger({ service: "test-service", destination });
+  logger.info("request completed", { authorization: "Bearer secret", api_key: "private", nested: { token: "hidden" }, requestId: "safe-id" });
+  const entry: unknown = JSON.parse(messages[0] ?? "null");
+  assert.equal(isLogEntry(entry) ? entry.authorization : undefined, "[REDACTED]");
+  assert.equal(isLogEntry(entry) ? entry.api_key : undefined, "[REDACTED]");
+  assert.equal(isLogEntry(entry) && isLogEntry(entry.nested) ? entry.nested.token : undefined, "[REDACTED]");
+  assert.equal(isLogEntry(entry) ? entry.requestId : undefined, "safe-id");
+});
+
 void test("writes readable structured terminal logs", () => {
   const messages: string[] = [];
   const destination = new Writable({

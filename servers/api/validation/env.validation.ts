@@ -39,7 +39,10 @@ export const apiEnvironmentSchema = z.object({
   STORY_AGENT_MAX_CONCURRENT_RUNS: z.coerce.number().int().positive().optional(),
   STORY_AGENT_MAX_REQUESTS_PER_WINDOW: z.coerce.number().int().positive().optional(),
   STORY_AGENT_REQUEST_WINDOW_MS: z.coerce.number().int().positive().optional(),
-  STORY_AGENT_MAX_TRACKED_CLIENTS: z.coerce.number().int().positive().optional()
+  STORY_AGENT_MAX_TRACKED_CLIENTS: z.coerce.number().int().positive().optional(),
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.url().refine((value) => value.startsWith("http://") || value.startsWith("https://"), "OTLP endpoint must use HTTP or HTTPS.").optional(),
+  OTEL_EXPORTER_OTLP_HEADERS: z.string().max(2_048).optional(),
+  OTEL_SERVICE_NAME: z.string().min(1).max(64).optional()
 }) satisfies z.ZodType<ValidatedApiEnvironment>;
 
 export const validateApiEnvironment = (input: unknown): ValidatedApiEnvironment => {

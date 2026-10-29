@@ -351,10 +351,10 @@ export const checkUiRegistryWorkflow = async (workspace) => {
   if (packageJson.scripts?.[addAllScript] !== catalogCommand) {
     issues.push({ level: "error", message: `${project.name} script ${addAllScript} must install the official registry catalog.` });
   }
-  if (rootPackageJson.scripts?.[addScript] !== `pnpm --dir ${project.root} run ${addScript}`) {
+  if (rootPackageJson.scripts?.[addScript] !== `corepack pnpm --dir ${project.root} run ${addScript}`) {
     issues.push({ level: "error", message: `Root script ${addScript} must delegate to the UI package.` });
   }
-  if (rootPackageJson.scripts?.[addAllScript] !== `pnpm --dir ${project.root} run ${addAllScript}`) {
+  if (rootPackageJson.scripts?.[addAllScript] !== `corepack pnpm --dir ${project.root} run ${addAllScript}`) {
     issues.push({ level: "error", message: `Root script ${addAllScript} must delegate to the UI package.` });
   }
   for (const item of catalogItems) {

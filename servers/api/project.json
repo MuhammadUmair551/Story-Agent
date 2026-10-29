@@ -3,7 +3,7 @@
   "type": "server",
   "description": "Primary Express API runtime.",
   "internalDependencies": ["eslint-config", "logging", "tsconfig", "types"],
-  "externalDependencies": ["dotenv", "express", "mongoose", "zod"],
+  "externalDependencies": ["@opentelemetry/api", "@opentelemetry/exporter-metrics-otlp-http", "@opentelemetry/exporter-trace-otlp-http", "@opentelemetry/sdk-metrics", "@opentelemetry/sdk-node", "dotenv", "express", "mongoose", "zod"],
   "capabilities": ["http-api", "health", "mongodb-integration"],
   "tasks": {
     "dev": { "command": "pnpm run dev", "environment": ["API_HOST", "API_PORT", "WEB_ORIGIN", "MONGODB_URI"], "cache": false },

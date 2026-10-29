@@ -4,6 +4,35 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { executePlan } from "./runner.mjs";
 
+test("workspace pnpm tasks ignore a conflicting global shim", async (context) => {
+  const root = await mkdtemp(path.join(process.cwd(), ".test-tmp-pinned-pnpm-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "corepack", "dist"), { recursive: true });
+  await writeFile(path.join(root, "corepack", "dist", "pnpm.js"), "console.log('PINNED_TASK ' + process.argv.slice(2).join(' '));");
+  const previous = process.env.COREPACK_ROOT;
+  process.env.COREPACK_ROOT = path.join(root, "corepack");
+  context.after(() => { if (previous === undefined) delete process.env.COREPACK_ROOT; else process.env.COREPACK_ROOT = previous; });
+  const result = await executePlan({
+    workspace: { root, architecture: { foundation: { ignoredDirectories: [] } } },
+    captureOutput: true,
+    plan: [{ id: "fixture:test", project: "fixture", projectRoot: ".", name: "test", command: "pnpm test", inputs: [], outputs: [], cache: false, taskDependencies: [] }]
+  });
+  assert.equal(result[0].status, "passed", result[0].stderr);
+  assert.match(result[0].stdout, /PINNED_TASK test/);
+});
+
+test("repository shell tasks retain quoted arguments and compound command behavior", async (context) => {
+  const root = await mkdtemp(path.join(process.cwd(), ".test-tmp-shell-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "task.mjs"), "console.log(JSON.stringify(process.argv.slice(2)));\n");
+  const result = await executePlan({
+    workspace: { root, architecture: { foundation: { ignoredDirectories: [] } } }, captureOutput: true,
+    plan: [{ id: "fixture:test", project: "fixture", projectRoot: ".", name: "test", command: `"${process.execPath}" task.mjs "a b" && "${process.execPath}" task.mjs second`, inputs: [], outputs: [], cache: false, taskDependencies: [] }]
+  });
+  assert.equal(result[0].status, "passed", result[0].stderr);
+  assert.deepEqual(result[0].stdout.trim().split(/\r?\n/).map((line) => JSON.parse(line)), [["a b"], ["second"]]);
+});
+
 test("executes a cacheable task once and reuses its result", async (context) => {
   const root = await mkdtemp(path.join(process.cwd(), ".test-tmp-runner-"));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -56,10 +85,11 @@ test("runs independent tasks concurrently and skips failed dependents", async (c
     maximumActive = Math.max(maximumActive, active);
     await new Promise((resolve) => setTimeout(resolve, 20));
     active -= 1;
-    return { exitCode: command === "one" ? 1 : 0, signal: null, stdout: "", stderr: "" };
+    return { exitCode: command === "one" ? 1 : 0, signal: null, stdout: "", stderr: "", durationMs: 0 };
   };
   const results = await executePlan({ workspace: { root, architecture: { foundation: { ignoredDirectories: [] } } }, plan, concurrency: 2, commandRunner });
   assert.equal(maximumActive, 2);
+  assert.ok(results[0].durationMs > 0, "task duration includes orchestration rather than being replaced by tool duration");
   assert.deepEqual(results.map(({ task, status }) => [task, status]), [["one", "failed"], ["two", "passed"], ["dependent", "skipped"]]);
 });
 
