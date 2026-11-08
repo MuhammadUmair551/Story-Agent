@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { MongoCollection, MongoDocument, MongoPersistence } from "../../../integrations/index.js";
 import { createStoryAgentRepository, type StoryAgentDraftDocument, type StoryAgentRunDocument } from "../story-agent.repository.js";
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
@@ -8,50 +7,7 @@ const run = (runId: string, createdAt: string): StoryAgentRunDocument => ({
   runId, status: "draft", requirement: "Create stories", usage, providers: [], attempts: 1, stages: [], validationErrors: [], createdAt, updatedAt: createdAt
 });
 
-const matches = <TDocument extends MongoDocument>(document: TDocument, filter: Partial<TDocument>): boolean =>
-  Object.entries(filter).every(([key, value]) => document[key] === value);
-
-const createMemoryPersistence = (): Readonly<{ db: MongoPersistence; indexes: string[] }> => {
-  const documents = new Map<string, MongoDocument[]>();
-  const indexes: string[] = [];
-  const collection = <TDocument extends MongoDocument>(name: string): MongoCollection<TDocument> => ({
-    insertOne: (document) => {
-      const items = documents.get(name) ?? [];
-      items.push(document);
-      documents.set(name, items);
-      return Promise.resolve({ insertedId: items.length });
-    },
-    findOne: (filter) => Promise.resolve((documents.get(name) ?? []).find((document) => matches(document, filter)) as TDocument | undefined ?? null),
-    find: (filter, options) => {
-      const items = (documents.get(name) ?? []).filter((document) => matches(document, filter));
-      const sorted = options?.sort ? [...items].sort((left, right) => {
-        const [key, direction] = Object.entries(options.sort ?? {})[0] ?? ["", 1];
-        return String(left[key]).localeCompare(String(right[key])) * direction;
-      }) : items;
-      return Promise.resolve(sorted.slice(options?.skip ?? 0, (options?.skip ?? 0) + (options?.limit ?? sorted.length)) as TDocument[]);
-    },
-    countDocuments: (filter) => Promise.resolve((documents.get(name) ?? []).filter((document) => matches(document, filter)).length),
-    updateOne: (filter, update) => {
-      const item = (documents.get(name) ?? []).find((document) => matches(document, filter));
-      if (!item) return Promise.resolve({ matchedCount: 0, modifiedCount: 0 });
-      Object.assign(item, update.$set ?? {});
-      return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
-    },
-    findOneAndUpdate: (filter, update) => {
-      const item = (documents.get(name) ?? []).find((document) => matches(document, filter as Partial<TDocument>));
-      if (!item) return Promise.resolve(null);
-      Object.assign(item, update.$set ?? {});
-      const mutable = item as Record<string, unknown>;
-      for (const [key, amount] of Object.entries(update.$inc ?? {})) mutable[key] = Number(mutable[key] ?? 0) + (amount ?? 0);
-      return Promise.resolve(item as TDocument);
-    },
-    createIndex: (spec, options) => {
-      indexes.push(`${name}:${Object.keys(spec).join(",")}:${String(options?.unique)}`);
-      return Promise.resolve(options?.name ?? "index");
-    }
-  });
-  return { db: { getCollection: collection }, indexes };
-};
+import { createMemoryPersistence } from "./story-agent.memory.js";
 
 void test("saves, retrieves, updates, lists, and indexes runs", async () => {
   const persistence = createMemoryPersistence();

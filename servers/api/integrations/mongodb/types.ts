@@ -1,4 +1,7 @@
 export type MongoDocument = Readonly<Record<string, unknown>>;
+export type MongoReadFilter<TDocument extends MongoDocument> = Readonly<{
+  [Key in keyof TDocument]?: TDocument[Key] | Readonly<{ $exists: boolean }>;
+}>;
 
 export type MongoInsertResult = Readonly<{ insertedId: unknown }>;
 export type MongoFindOptions = Readonly<{
@@ -17,8 +20,9 @@ export type MongoUpdate<TDocument extends MongoDocument> = Readonly<{
 export type MongoCollection<TDocument extends MongoDocument> = Readonly<{
   insertOne: (document: TDocument) => Promise<MongoInsertResult>;
   findOne: (filter: Partial<TDocument>) => Promise<TDocument | null>;
-  find: (filter: Partial<TDocument>, options?: MongoFindOptions) => Promise<TDocument[]>;
-  countDocuments: (filter: Partial<TDocument>) => Promise<number>;
+  find: (filter: MongoReadFilter<TDocument>, options?: MongoFindOptions) => Promise<TDocument[]>;
+  countDocuments: (filter: MongoReadFilter<TDocument>) => Promise<number>;
+  deleteOne: (filter: Partial<TDocument>) => Promise<Readonly<{ deletedCount: number }>>;
   updateOne: (filter: Partial<TDocument>, update: MongoUpdate<TDocument>) => Promise<MongoUpdateResult>;
   findOneAndUpdate: (filter: Readonly<Record<string, unknown>>, update: MongoUpdate<TDocument>, options?: MongoFindOneAndUpdateOptions) => Promise<TDocument | null>;
   createIndex: (spec: Record<string, 1 | -1>, options?: MongoIndexOptions) => Promise<string>;

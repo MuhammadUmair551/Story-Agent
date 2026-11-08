@@ -37,7 +37,11 @@ const taskSchema = z.object({
   effort: z.enum(["S", "M", "L"])
 });
 
+export const storyMetadataSchema = storySchema.pick({ states: true, dependsOn: true, openQuestions: true, sliceRationale: true });
+
 const plannedStorySchema = z.object({
+  artifactId: text.max(120).optional(),
+  metadata: storyMetadataSchema.optional(),
   title: text.max(240),
   intent: text.max(2_000),
   acceptanceCriteria: z.array(text.max(1_000)).min(1).max(20),
@@ -65,3 +69,10 @@ export const planSchema = z.object({
 }) satisfies z.ZodType<StoryAgentPlan>;
 
 export const runStatusSchema = z.enum(["questions", "draft", "failed", "queued"]) satisfies z.ZodType<StoryAgentRunStatus>;
+
+export const refinementInputSchema = z.object({
+  artifactPath: text.max(240).regex(/^initiative(?:\.epics\.\d+(?:\.features\.\d+(?:\.stories\.\d+(?:\.tasks\.\d+)?)?)?)?$/),
+  instructions: text.max(2_000),
+  version: z.number().int().nonnegative()
+});
+export const refinementDecisionSchema = z.object({ decision: z.enum(["accept", "reject"]), version: z.number().int().nonnegative() });

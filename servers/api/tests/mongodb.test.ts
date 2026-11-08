@@ -29,6 +29,7 @@ void test("composes the server-owned MongoDB integration when configured", async
         find: () => Promise.resolve([]),
         countDocuments: () => Promise.resolve(0),
         updateOne: () => Promise.resolve({ matchedCount: 0, modifiedCount: 0 }),
+        deleteOne: () => Promise.resolve({ deletedCount: 0 }),
         findOneAndUpdate: () => Promise.resolve(null),
         createIndex: () => Promise.resolve("unused")
       }) });
@@ -72,18 +73,19 @@ void test("exposes typed collections to feature dependencies after connecting", 
       return Promise.resolve(null);
     },
     find: (filter, options) => {
-      calls.push(`find:${String(filter.status)}:${String(options?.skip)}:${String(options?.limit)}`);
+      calls.push(`find:${typeof filter.status === "string" ? filter.status : ""}:${String(options?.skip)}:${String(options?.limit)}`);
       return Promise.resolve([{ runId: "run-2", status: "draft" }]);
     },
     countDocuments: (filter) => {
-      calls.push(`count:${String(filter.status)}`);
+      calls.push(`count:${typeof filter.status === "string" ? filter.status : ""}`);
       return Promise.resolve(1);
     },
     updateOne: (filter, update) => {
       calls.push(`update:${String(filter.runId)}:${String(update.$set?.status)}`);
       return Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
     },
-    findOneAndUpdate: () => Promise.resolve(null),
+    deleteOne: () => Promise.resolve({ deletedCount: 0 }),
+        findOneAndUpdate: () => Promise.resolve(null),
     createIndex: (spec, options) => {
       calls.push(`index:${String(spec.runId)}:${String(options?.unique)}`);
       return Promise.resolve("runId_unique");

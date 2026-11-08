@@ -1,5 +1,7 @@
 import { z } from "zod";
-import type { StoryAgentClarifications, StoryAgentPlan, StoryAgentStory, StoryAgentUsage } from "@workspace/types";
+import type { StoryAgentClarifications, StoryAgentPlan, StoryAgentStory, StoryAgentUsage, StoryAgentQualityReport, StoryAgentRefinementChange } from "@workspace/types";
+import { explainQuality } from "./story-agent.quality.js";
+import { mergeRefinedArtifact, refinementPrompt, refinementChanges, type RefinementInput } from "./story-agent.refinement.js";
 import { extractJson } from "./story-agent.json.js";
 import { isStoryAgentRouterError, type StoryAgentProviderRouter } from "./story-agent.router.js";
 import { clarificationsSchema, planSchema, storySchema } from "./story-agent.validation.js";
@@ -16,6 +18,8 @@ export type StoryAgentPipelineResult = Readonly<{
   questions?: readonly string[];
   stories?: readonly StoryAgentStory[];
   plan?: StoryAgentPlan;
+  quality?: StoryAgentQualityReport;
+  refinementChanges?: readonly StoryAgentRefinementChange[];
   attempts: number;
   usage: StoryAgentUsage;
   providers: readonly string[];
@@ -24,7 +28,7 @@ export type StoryAgentPipelineResult = Readonly<{
   reason?: string;
 }>;
 
-export type StoryAgentPipelineInput = Readonly<{ requirement: string; context?: string | undefined; existingItems?: readonly StoryAgentExistingItem[] | undefined }>;
+export type StoryAgentPipelineInput = Readonly<{ requirement: string; context?: string | undefined; existingItems?: readonly StoryAgentExistingItem[] | undefined; refinement?: RefinementInput }>;
 type PipelineDependencies = Readonly<{ route: StoryAgentProviderRouter; now: () => number; budget: StoryAgentBudget }>;
 type GatheredContext = Readonly<{ text: string; titles: readonly string[] }>;
 type CompletionLedger = { calls: number; usage: StoryAgentUsage; providers: string[]; stages: StoryAgentStageOutcome[] };
@@ -37,6 +41,7 @@ const clarifyResponseSchema = z.object({
 });
 const refusalSchema = z.object({ refusal: z.object({ reason: z.string().trim().min(1).max(1_000) }) });
 const generatedStoriesSchema = z.object({ stories: z.array(storySchema) });
+const refinementReasonsSchema = z.object({ changes: z.array(z.object({ path: z.string().trim().min(1).max(300), explanation: z.string().trim().min(1).max(1_000), reason: z.string().trim().min(1).max(1_000) })).min(1).max(300) });
 const maxRepairOutputCharacters = 12_000;
 const maxRepairErrors = 10;
 const maxRepairErrorCharacters = 500;
@@ -81,19 +86,19 @@ export const validateStories = (stories: unknown, existingTitles: readonly strin
   return errors;
 };
 
-const flattenPlan = (plan: StoryAgentPlan): readonly StoryAgentStory[] => plan.initiative.epics.flatMap((epic) => epic.features.flatMap((feature) => feature.stories.map((story) => ({
+export const flattenPlan = (plan: StoryAgentPlan): readonly StoryAgentStory[] => plan.initiative.epics.flatMap((epic) => epic.features.flatMap((feature) => feature.stories.map((story) => ({
   title: story.title,
   intent: story.intent,
   epic: epic.title,
   size: story.tasks.some((task) => task.effort === "L") ? "L" : story.tasks.some((task) => task.effort === "M") ? "M" : "S",
   acceptanceCriteria: story.acceptanceCriteria,
-  states: [],
-  dependsOn: [],
-  openQuestions: [],
-  sliceRationale: `${feature.title}: ${feature.outcome}`
+  states: story.metadata?.states ?? [],
+  dependsOn: story.metadata?.dependsOn ?? [],
+  openQuestions: story.metadata?.openQuestions ?? [],
+  sliceRationale: story.metadata?.sliceRationale ?? `${feature.title}: ${feature.outcome}`
 }))));
 
-const legacyPlan = (requirement: string, stories: readonly StoryAgentStory[]): StoryAgentPlan => ({
+export const legacyPlan = (requirement: string, stories: readonly StoryAgentStory[]): StoryAgentPlan => ({
   initiative: {
     title: requirement.slice(0, 240), outcome: requirement,
     epics: Array.from(stories.reduce<Map<string, StoryAgentStory[]>>((groups, story) => {
@@ -114,7 +119,7 @@ const legacyPlan = (requirement: string, stories: readonly StoryAgentStory[]): S
   }
 });
 
-const validatePlan = (plan: unknown, existingTitles: readonly string[], maxStories: number): readonly string[] => {
+export const validatePlan = (plan: unknown, existingTitles: readonly string[], maxStories: number): readonly string[] => {
   const parsed = planSchema.safeParse(plan);
   if (!parsed.success) return parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
   return validateStories(flattenPlan(parsed.data), existingTitles, maxStories);
@@ -197,7 +202,7 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
     const gathered = withStoryStageSpan("story_agent.context.gather", () => gatherContext(accepted.requirement, input.existingItems ?? [], dependencies.budget.contextTokenLimit));
     ledger.stages.push(stage("gatherContext", "completed"));
     const context = [accepted.context, gathered.text].filter(Boolean).join("\n");
-    const clarify = await request("clarify", "fast", clarifyPrompt.build({ requirement: accepted.requirement, ...(context ? { context } : {}) }), ledger, startedAt, dependencies);
+    const clarify = input.refinement ? { text: JSON.stringify({ needsClarification: false, questions: [], assumptions: [] }) } : await request("clarify", "fast", clarifyPrompt.build({ requirement: accepted.requirement, ...(context ? { context } : {}) }), ledger, startedAt, dependencies);
     if (isPipelineResult(clarify)) return clarify;
     let clarifications: StoryAgentClarifications;
     try {
@@ -216,7 +221,7 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
       return result(ledger, "failed", [], { reason: "invalid_clarification_output" });
     }
 
-    let generated = await request("generate", "generate", generatePrompt.build({
+    let generated = await request("generate", "generate", (input.refinement ? refinementPrompt(input.refinement) : "") + generatePrompt.build({
       requirement: accepted.requirement,
       ...(context ? { context } : {}),
       clarifications,
@@ -231,28 +236,43 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
         ledger.stages.push(stage("validate", "failed", "Model refused request."));
         return result(ledger, "failed", [], { reason: "model_refusal" });
       }
-      const plan = planFromCandidate(candidate);
+      let plan = planFromCandidate(candidate);
+      if (input.refinement) {
+        try { plan = mergeRefinedArtifact(input.refinement, planSchema.parse(plan)); }
+        catch (error: unknown) {
+          errors = [error instanceof Error ? error.message : "Story identity/context mapping could not be verified."];
+          plan = undefined; candidate = undefined;
+        }
+      }
       if (plan !== undefined) {
         errors = withStoryStageSpan("story_agent.output.validate", () => validatePlan(plan, gathered.titles, dependencies.budget.maxStories), (validationErrors) => validationErrors.length === 0 ? "passed" : "failed");
+        let explainedChanges: StoryAgentRefinementChange[] | undefined;
+        if (input.refinement && errors.length === 0) {
+          const reasons = refinementReasonsSchema.safeParse(candidate);
+          const actual = refinementChanges(input.refinement.original, planSchema.parse(plan), input.refinement.artifactPath);
+          if (!actual.length || !reasons.success || actual.some((change) => reasons.data.changes.filter((item) => item.path === change.path).length !== 1) || reasons.data.changes.length !== actual.length) {
+            errors = ["Refinement must change the selected artifact and explain every changed field exactly once in changes[{path,explanation,reason}]."];
+          } else explainedChanges = reasons.data.changes;
+        }
         if (errors.length === 0) {
           if (repair > 0) recordValidationEvent("repair_succeeded");
           const parsedPlan = planSchema.parse(plan);
-          return result(ledger, "draft", [], { plan: parsedPlan, stories: flattenPlan(parsedPlan) });
+          return result(ledger, "draft", [], { plan: parsedPlan, stories: flattenPlan(parsedPlan), quality: explainQuality(parsedPlan, []), ...(explainedChanges ? { refinementChanges: explainedChanges } : {}) });
         }
-      } else {
+      } else if (!input.refinement) {
         const stories = isObjectWithStories(candidate) ? candidate.stories : undefined;
         errors = withStoryStageSpan("story_agent.output.validate", () => validateStories(stories, gathered.titles, dependencies.budget.maxStories), (validationErrors) => validationErrors.length === 0 ? "passed" : "failed");
         if (errors.length === 0) {
           if (repair > 0) recordValidationEvent("repair_succeeded");
           const parsedStories = generatedStoriesSchema.parse(candidate).stories;
-          return result(ledger, "draft", [], { plan: legacyPlan(accepted.requirement, parsedStories), stories: parsedStories });
+          return result(ledger, "draft", [], { plan: legacyPlan(accepted.requirement, parsedStories), stories: parsedStories, quality: explainQuality(legacyPlan(accepted.requirement, parsedStories), []) });
         }
       }
       ledger.stages.push(stage("validate", "failed", errors.join("; ")));
       recordValidationEvent("failed");
-      if (repair === 2) return result(ledger, "failed", errors, { reason: "validation_failed" });
+      if (repair === 2) return result(ledger, "failed", errors, { reason: "validation_failed", quality: explainQuality(undefined, errors) });
       recordValidationEvent("repair_attempt");
-      generated = await request("repair", "generate", repairPrompt.build({
+      generated = await request("repair", "generate", (input.refinement ? refinementPrompt(input.refinement) : "") + repairPrompt.build({
         requirement: accepted.requirement,
         clarifications,
         previousOutput: generated.text.slice(0, maxRepairOutputCharacters),

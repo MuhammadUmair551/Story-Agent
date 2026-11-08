@@ -20,6 +20,7 @@ const resultFields = (result: StoryAgentPipelineResult, now: string): Partial<St
   ...(result.questions ? { questions: [...result.questions] } : {}),
   ...(result.stories ? { stories: [...result.stories] } : {}),
   ...(result.plan ? { plan: result.plan } : {}),
+  ...(result.quality ? { quality: result.quality } : {}),
   usage: result.usage,
   providers: [...result.providers],
   attempts: result.attempts,

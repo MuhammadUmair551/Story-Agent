@@ -20,7 +20,7 @@ const repository = (run: StoryAgentRunDocument | null, updates: Array<{ status: 
   getDraftByRun: async () => null,
   countQueuedRuns: async () => 0,
   claimQueuedRun: async () => run,
-  ensureIndexes: async () => undefined
+  deleteRun: async () => "missing", saveRefinements: async () => false, ensureIndexes: async () => undefined
 });
 
 void test("processes a claimed run once and saves its draft", async () => {

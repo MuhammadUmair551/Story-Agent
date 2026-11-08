@@ -1,4 +1,4 @@
-import type { StoryAgentPlan, StoryAgentRunStatus, StoryAgentStory, StoryAgentUsage } from "@workspace/types";
+import type { StoryAgentPlan, StoryAgentRunStatus, StoryAgentStory, StoryAgentUsage, StoryAgentQualityReport, StoryAgentRefinement } from "@workspace/types";
 import type { MongoPersistence } from "../../integrations/index.js";
 import type { StoryAgentStageOutcome } from "./story-agent.service.js";
 
@@ -10,6 +10,10 @@ export type StoryAgentRunDocument = Readonly<Record<string, unknown>> & Readonly
   questions?: readonly string[] | undefined;
   stories?: readonly StoryAgentStory[] | undefined;
   plan?: StoryAgentPlan | undefined;
+  quality?: StoryAgentQualityReport | undefined;
+  refinements?: readonly StoryAgentRefinement[] | undefined;
+  refinementVersion?: number | undefined;
+  deletingAt?: string | undefined;
   usage: StoryAgentUsage;
   providers: readonly string[];
   attempts: number;
@@ -43,6 +47,8 @@ export type StoryAgentRepository = Readonly<{
   getQueueStats?: () => Promise<Readonly<{ depth: number; oldestCreatedAt?: string | undefined }>>;
   claimQueuedRun: (now: string, lockedUntil: string) => Promise<StoryAgentRunDocument | null>;
   ensureIndexes: () => Promise<void>;
+  deleteRun: (runId: string, now: string) => Promise<"deleted" | "missing" | "busy">;
+  saveRefinements: (runId: string, expectedVersion: number, refinements: readonly StoryAgentRefinement[], now: string) => Promise<boolean>;
 }>;
 
 export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepository => {
@@ -57,16 +63,30 @@ export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepo
     listRuns: async ({ limit, skip }): Promise<StoryAgentRunDocument[]> => await runs.find({}, { sort: { createdAt: -1 }, limit, skip }),
     saveDraft: async (document): Promise<void> => { await drafts.insertOne(document); },
     getDraftByRun: async (runId): Promise<StoryAgentDraftDocument | null> => await drafts.findOne({ runId }),
-    countQueuedRuns: async (): Promise<number> => await runs.countDocuments({ status: "queued" }),
+    saveRefinements: async (runId, expectedVersion, refinements, now): Promise<boolean> => Boolean(await runs.findOneAndUpdate({
+      runId, deletingAt: { $exists: false },
+      ...(expectedVersion === 0 ? { $or: [{ refinementVersion: 0 }, { refinementVersion: { $exists: false } }] } : { refinementVersion: expectedVersion })
+    }, { $set: { refinements, refinementVersion: expectedVersion + 1, updatedAt: now } })),
+    deleteRun: async (runId, now) => {
+      // A deletion marker prevents future queue claims. Active leases finish first.
+      const marked = await runs.findOneAndUpdate({ runId, $or: [{ lockedUntil: null }, { lockedUntil: { $exists: false } }, { lockedUntil: { $lte: now } }] }, { $set: { deletingAt: now } });
+      if (!marked) return await runs.findOne({ runId }) ? "busy" : "missing";
+      // Keep the marked run if cleanup fails so the same deletion can be retried.
+      await drafts.deleteOne({ runId });
+      await runs.deleteOne({ runId });
+      return "deleted";
+    },
+    countQueuedRuns: async (): Promise<number> => await runs.countDocuments({ status: "queued", deletingAt: { $exists: false } }),
     getQueueStats: async () => {
       const [depth, oldest] = await Promise.all([
-        runs.countDocuments({ status: "queued" }),
-        runs.find({ status: "queued" }, { sort: { createdAt: 1 }, limit: 1 })
+        runs.countDocuments({ status: "queued", deletingAt: { $exists: false } }),
+        runs.find({ status: "queued", deletingAt: { $exists: false } }, { sort: { createdAt: 1 }, limit: 1 })
       ]);
       return Object.freeze({ depth, ...(oldest[0] ? { oldestCreatedAt: oldest[0].createdAt } : {}) });
     },
     claimQueuedRun: async (now, lockedUntil): Promise<StoryAgentRunDocument | null> => await runs.findOneAndUpdate({
       status: "queued",
+      deletingAt: { $exists: false },
       nextAttemptAt: { $lte: now },
       $or: [{ lockedUntil: null }, { lockedUntil: { $lte: now } }]
     }, { $set: { lockedUntil, updatedAt: now }, $inc: { queueAttempts: 1 } }, { sort: { createdAt: 1 } }),

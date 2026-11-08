@@ -29,11 +29,15 @@ export type StoryAgentTask = Readonly<{
 }>;
 
 export type StoryAgentPlannedStory = Readonly<{
+  artifactId?: string | undefined;
+  metadata?: StoryAgentStoryMetadata | undefined;
   title: string;
   intent: string;
   acceptanceCriteria: readonly string[];
   tasks: readonly StoryAgentTask[];
 }>;
+
+export type StoryAgentStoryMetadata = Readonly<Pick<StoryAgentStory, "states" | "dependsOn" | "openQuestions" | "sliceRationale">>;
 
 export type StoryAgentFeature = Readonly<{
   title: string;
@@ -61,6 +65,41 @@ export type StoryAgentUsage = Readonly<{
   totalTokens: number;
 }>;
 
+export type StoryAgentArtifactLevel = "initiative" | "epic" | "feature" | "story" | "task";
+export type StoryAgentQualityCheck = Readonly<{
+  artifactPath: string;
+  level: StoryAgentArtifactLevel;
+  dimension: "scope" | "ambiguity" | "completeness" | "independence" | "testability" | "requirement_coverage" | "duplicate_behavior";
+  status: "passed" | "warning" | "failed" | "needs_review";
+  issue: string;
+  reason: string;
+  impact: string;
+  suggestedFix: string;
+}>;
+
+export type StoryAgentQualityReport = Readonly<{
+  status: "passed" | "failed";
+  checks: readonly StoryAgentQualityCheck[];
+}>;
+
+export type StoryAgentRefinementChange = Readonly<{
+  path: string;
+  explanation: string;
+  reason: string;
+}>;
+
+export type StoryAgentRefinement = Readonly<{
+  id: string;
+  artifactPath: string;
+  status: "pending" | "accepted" | "rejected";
+  original: StoryAgentPlan;
+  proposed: StoryAgentPlan;
+  changes: readonly StoryAgentRefinementChange[];
+  quality: StoryAgentQualityReport;
+  createdAt: string;
+  decidedAt?: string | undefined;
+}>;
+
 export type StoryAgentRunResponse = Readonly<{
   runId: string;
   status: StoryAgentRunStatus;
@@ -68,5 +107,6 @@ export type StoryAgentRunResponse = Readonly<{
   questions?: readonly string[] | undefined;
   stories?: readonly StoryAgentStory[] | undefined;
   plan?: StoryAgentPlan | undefined;
+  quality?: StoryAgentQualityReport | undefined;
   error?: string | undefined;
 }>;

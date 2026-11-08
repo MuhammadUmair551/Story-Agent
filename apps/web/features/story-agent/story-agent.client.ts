@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type {
   StoryAgentRun,
   StoryAgentRunDetail,
@@ -6,7 +7,10 @@ import type {
   StoryAgentStory,
   StoryAgentTask,
   StoryAgentPlan,
-  StoryAgentUsage
+  StoryAgentUsage,
+  StoryAgentQualityReport,
+  StoryAgentRefinement,
+  StoryAgentStoryMetadata
 } from "./story-agent.types";
 
 export const filterStoryAgentRuns = (runs: StoryAgentRun[], query: string): StoryAgentRun[] => {
@@ -99,13 +103,21 @@ const asTask = (value: unknown): StoryAgentTask | undefined => {
   return { title: record.title, description: record.description, effort: record.effort };
 };
 
+const asMetadata = (value: unknown): StoryAgentStoryMetadata | undefined => {
+  const record = asRecord(value);
+  const states = asStrings(record.states), dependsOn = asStrings(record.dependsOn), openQuestions = asStrings(record.openQuestions);
+  return states && dependsOn && openQuestions && typeof record.sliceRationale === "string" ? { states, dependsOn, openQuestions, sliceRationale: record.sliceRationale } : undefined;
+};
+
 const asPlan = (value: unknown): StoryAgentPlan | undefined => {
   const root = asRecord(value); const initiative = asRecord(root.initiative);
   const epics = Array.isArray(initiative.epics) ? initiative.epics.map((epicValue) => {
     const epic = asRecord(epicValue); const features = Array.isArray(epic.features) ? epic.features.map((featureValue) => {
       const feature = asRecord(featureValue); const stories = Array.isArray(feature.stories) ? feature.stories.map((storyValue) => {
-        const story = asRecord(storyValue); const tasks = Array.isArray(story.tasks) ? story.tasks.map(asTask) : [];
-        return typeof story.title === "string" && typeof story.intent === "string" && asStrings(story.acceptanceCriteria) !== undefined && tasks.every((task) => task !== undefined) && tasks.length > 0 ? { title: story.title, intent: story.intent, acceptanceCriteria: asStrings(story.acceptanceCriteria) ?? [], tasks: tasks as NonNullable<typeof tasks[number]>[] } : undefined;
+        const story = asRecord(storyValue); const metadata = asMetadata(story.metadata);
+        if ((story.metadata !== undefined && !metadata) || (story.artifactId !== undefined && typeof story.artifactId !== "string")) return undefined;
+        const tasks = Array.isArray(story.tasks) ? story.tasks.map(asTask) : [];
+        return typeof story.title === "string" && typeof story.intent === "string" && asStrings(story.acceptanceCriteria) !== undefined && tasks.every((task) => task !== undefined) && tasks.length > 0 ? { ...(typeof story.artifactId === "string" ? { artifactId: story.artifactId } : {}), ...(metadata ? { metadata } : {}), title: story.title, intent: story.intent, acceptanceCriteria: asStrings(story.acceptanceCriteria) ?? [], tasks: tasks as NonNullable<typeof tasks[number]>[] } : undefined;
       }) : [];
       return typeof feature.title === "string" && typeof feature.outcome === "string" && stories.every((story) => story !== undefined) && stories.length > 0 ? { title: feature.title, outcome: feature.outcome, stories: stories as NonNullable<typeof stories[number]>[] } : undefined;
     }) : [];
@@ -114,11 +126,27 @@ const asPlan = (value: unknown): StoryAgentPlan | undefined => {
   return typeof initiative.title === "string" && typeof initiative.outcome === "string" && epics.every((epic) => epic !== undefined) && epics.length > 0 ? { initiative: { title: initiative.title, outcome: initiative.outcome, epics: epics as NonNullable<typeof epics[number]>[] } } : undefined;
 };
 
+const qualitySchema = z.object({ status: z.enum(["passed", "failed"]), checks: z.array(z.object({
+  artifactPath: z.string(), level: z.enum(["initiative", "epic", "feature", "story", "task"]),
+  dimension: z.enum(["scope", "ambiguity", "completeness", "independence", "testability", "requirement_coverage", "duplicate_behavior"]),
+  status: z.enum(["passed", "failed", "warning", "needs_review"]), issue: z.string(), reason: z.string(), impact: z.string(), suggestedFix: z.string()
+})) }) satisfies z.ZodType<StoryAgentQualityReport>;
+
+const refinementSchema = z.object({
+  id: z.string(), artifactPath: z.string(), status: z.enum(["pending", "accepted", "rejected"]),
+  original: z.unknown().transform((value, ctx) => { const plan = asPlan(value); if (plan) return plan; ctx.addIssue({ code: "custom", message: "Invalid original plan." }); return z.NEVER; }),
+  proposed: z.unknown().transform((value, ctx) => { const plan = asPlan(value); if (plan) return plan; ctx.addIssue({ code: "custom", message: "Invalid proposed plan." }); return z.NEVER; }),
+  changes: z.array(z.object({ path: z.string(), explanation: z.string(), reason: z.string() })),
+  quality: qualitySchema, createdAt: z.string(), decidedAt: z.string().optional()
+}) satisfies z.ZodType<StoryAgentRefinement>;
+
 export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
   const record = asRecord(value);
   const status = asStatus(record.status);
   const stories = asStories(record.stories);
   const plan = asPlan(record.plan);
+  const quality = qualitySchema.safeParse(record.quality);
+  const refinements = z.array(refinementSchema).safeParse(record.refinements);
   const invalidDraft = status === "draft" && stories === undefined && plan === undefined;
 
   return {
@@ -128,6 +156,9 @@ export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
     questions: asStrings(record.questions),
     stories,
     plan,
+    quality: quality.success ? quality.data : undefined,
+    refinements: refinements.success ? refinements.data : undefined,
+    refinementVersion: typeof record.refinementVersion === "number" ? record.refinementVersion : 0,
     usage: asUsage(record.usage),
     error: invalidDraft ? "Saved draft data is incomplete." : typeof record.error === "string" ? record.error : undefined,
     reason: typeof record.reason === "string" ? record.reason : undefined,
@@ -167,6 +198,15 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = fetch) 
   const endpoint = `${baseUrl.replace(/\/$/, "")}/story-agent/runs`;
 
   return {
+    deleteRun: async (runId: string): Promise<void> => {
+      await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}`, { method: "DELETE" });
+    },
+    proposeRefinement: async (runId: string, input: Readonly<{ artifactPath: string; instructions: string; version: number }>): Promise<void> => {
+      await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}/refinements`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
+    },
+    decideRefinement: async (runId: string, proposalId: string, decision: "accept" | "reject", version: number): Promise<void> => {
+      await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}/refinements/${encodeURIComponent(proposalId)}/decision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision, version }) });
+    },
     createRun: async (input: CreateRunInput): Promise<StoryAgentRunResponse> => {
       const payload = asRecord(await request(fetcher, endpoint, {
         method: "POST",
@@ -181,6 +221,7 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = fetch) 
         questions: run.questions,
         stories: run.stories,
         plan: run.plan,
+        quality: run.quality,
         usage: run.usage,
         error: run.error,
         reason: run.reason,

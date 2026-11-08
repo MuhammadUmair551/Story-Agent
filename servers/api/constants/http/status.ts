@@ -3,6 +3,8 @@ export const HTTP_STATUS = Object.freeze({
   accepted: 202,
   noContent: 204,
   badRequest: 400,
+  conflict: 409,
+  unprocessableEntity: 422,
   tooManyRequests: 429,
   notFound: 404,
   serviceUnavailable: 503,

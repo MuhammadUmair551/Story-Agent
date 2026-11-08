@@ -34,7 +34,7 @@ const createRepository = (saved: unknown[]): StoryAgentRepository => ({
   getDraftByRun: async () => null,
   countQueuedRuns: async () => 0,
   claimQueuedRun: async () => null,
-  ensureIndexes: async () => undefined
+  deleteRun: async () => "missing", saveRefinements: async () => false, ensureIndexes: async () => undefined
 });
 
 const closeServer = async (server: ReturnType<typeof createServer>): Promise<void> => {

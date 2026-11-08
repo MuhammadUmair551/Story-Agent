@@ -16,7 +16,8 @@
     "next": "16.4.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "zod": "^4.6.6"
+    "zod": "^4.6.6",
+    "@workspace/types": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
