@@ -34,6 +34,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@workspace/types':
+        specifier: workspace:*
+        version: link:../../packages/types
       '@workspace/ui':
         specifier: workspace:*
         version: link:../../packages/ui

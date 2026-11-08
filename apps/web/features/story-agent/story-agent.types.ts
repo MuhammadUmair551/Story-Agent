@@ -1,3 +1,5 @@
+import type { StoryAgentPlan, StoryAgentQualityReport, StoryAgentRefinement } from "@workspace/types";
+export type { StoryAgentPlan, StoryAgentTask, StoryAgentPlannedStory, StoryAgentFeature, StoryAgentEpic, StoryAgentQualityReport, StoryAgentRefinement, StoryAgentStoryMetadata } from "@workspace/types";
 export type StoryAgentStatus = "questions" | "draft" | "failed" | "queued";
 
 export type StoryAgentStory = {
@@ -19,12 +21,6 @@ export type StoryAgentUsage = {
   totalTokens?: number | undefined;
 };
 
-export type StoryAgentTask = { title: string; description: string; effort: "S" | "M" | "L" };
-export type StoryAgentPlannedStory = { title: string; intent: string; acceptanceCriteria: string[]; tasks: StoryAgentTask[] };
-export type StoryAgentFeature = { title: string; outcome: string; stories: StoryAgentPlannedStory[] };
-export type StoryAgentEpic = { title: string; objective: string; features: StoryAgentFeature[] };
-export type StoryAgentPlan = { initiative: { title: string; outcome: string; epics: StoryAgentEpic[] } };
-
 export type StoryAgentRun = {
   runId: string;
   status: StoryAgentStatus;
@@ -32,6 +28,9 @@ export type StoryAgentRun = {
   questions?: string[] | undefined;
   stories?: StoryAgentStory[] | undefined;
   plan?: StoryAgentPlan | undefined;
+  quality?: StoryAgentQualityReport | undefined;
+  refinements?: readonly StoryAgentRefinement[] | undefined;
+  refinementVersion?: number | undefined;
   usage?: StoryAgentUsage | undefined;
   error?: string | undefined;
   reason?: string | undefined;
@@ -42,7 +41,7 @@ export type StoryAgentRun = {
 
 export type StoryAgentRunResponse = Pick<
   StoryAgentRun,
-  "runId" | "status" | "questions" | "stories" | "plan" | "usage" | "error" | "reason"
+  "runId" | "status" | "questions" | "stories" | "plan" | "usage" | "error" | "reason" | "quality"
 > & {
   message?: string | undefined;
 };

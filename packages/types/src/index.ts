@@ -5,6 +5,11 @@ export type {
   ApiErrorResponse,
   ApiHealthResponse,
   StoryAgentClarifications,
+  StoryAgentArtifactLevel,
+  StoryAgentQualityCheck,
+  StoryAgentQualityReport,
+  StoryAgentRefinement,
+  StoryAgentRefinementChange,
   StoryAgentEpic,
   StoryAgentFeature,
   StoryAgentPlan,
@@ -13,6 +18,7 @@ export type {
   StoryAgentRunResponse,
   StoryAgentRunStatus,
   StoryAgentStory,
+  StoryAgentStoryMetadata,
   StoryAgentTask,
   StoryAgentUsage
 } from "./api/index.js";

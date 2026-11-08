@@ -5,11 +5,17 @@ import { createApplicationError } from "../../errors/index.js";
 import type { StoryAgentCapacity } from "./story-agent.capacity.js";
 import { requirementInputSchema } from "./story-agent.validation.js";
 import type { StoryAgentRepository, StoryAgentRunDocument } from "./story-agent.repository.js";
-import type { StoryAgentPipelineResult } from "./story-agent.service.js";
+import type { StoryAgentPipelineResult, StoryAgentPipelineInput } from "./story-agent.service.js";
 import { recordAdmission, withStorySpan, withStoryStageSpan } from "./story-agent.telemetry.js";
+import { refinementInputSchema, refinementDecisionSchema } from "./story-agent.validation.js";
+import { hasStoryContext, withStoryContext } from "./story-agent.metadata.js";
+import { activePlan, refinementChanges } from "./story-agent.refinement.js";
+import { explainQuality, planArtifacts } from "./story-agent.quality.js";
+import { flattenPlan, legacyPlan, validatePlan } from "./story-agent.service.js";
+import type { StoryAgentRefinement } from "@workspace/types";
 
 type Clock = Readonly<{ now: () => number }>;
-type Service = Readonly<{ run: (input: Readonly<{ requirement: string; context?: string | undefined }>) => Promise<StoryAgentPipelineResult> }>;
+type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult> }>;
 type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; capacity: StoryAgentCapacity; clock: Clock; createRunId?: () => string }>;
 type JsonResponse = Pick<Response, "json" | "status">;
 
@@ -41,6 +47,7 @@ const runDocument = (runId: string, input: Readonly<{ requirement: string; conte
     ...(pipeline.questions ? { questions: pipeline.questions } : {}),
     ...(pipeline.stories ? { stories: pipeline.stories } : {}),
     ...(pipeline.plan ? { plan: pipeline.plan } : {}),
+    ...(pipeline.quality ? { quality: pipeline.quality } : {}),
     usage: pipeline.usage,
     providers: pipeline.providers,
     attempts: pipeline.attempts,
@@ -52,6 +59,17 @@ const runDocument = (runId: string, input: Readonly<{ requirement: string; conte
     createdAt: toIso(now),
     updatedAt: toIso(now)
   };
+};
+
+const presentRun = (run: StoryAgentRunDocument): StoryAgentRunDocument => {
+  let plan = activePlan(run) ?? (run.status === "draft" && run.stories?.length ? legacyPlan(run.requirement, run.stories) : undefined);
+  if (!plan) return { ...run, quality: explainQuality(undefined, run.validationErrors) };
+  if (run.refinements?.some((proposal) => proposal.status === "accepted")) {
+    try { plan = withStoryContext(run.runId, plan, run.stories); }
+    catch (error: unknown) { return { ...run, plan, error: error instanceof Error ? error.message : "Story context mapping is uncertain; the original stories are retained.", quality: explainQuality(plan, validatePlan(plan, [], 10)) }; }
+    return { ...run, plan, stories: flattenPlan(plan), quality: explainQuality(plan, validatePlan(plan, [], 10)) };
+  }
+  return { ...run, plan, quality: explainQuality(plan, validatePlan(plan, [], 10)) };
 };
 
 export const createStoryAgentController = ({ repository, service, capacity, clock, createRunId = randomUUID }:
@@ -69,6 +87,60 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
     } finally { release?.(); }
   };
   return {
+  deleteRun: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
+    try {
+      const id = request.params.id;
+      if (typeof id !== "string" || !id) { response.status(HTTP_STATUS.badRequest).json({ error: "A run id is required." }); return; }
+      const outcome = await repository.deleteRun(id, toIso(clock.now()));
+      if (outcome === "missing") { response.status(HTTP_STATUS.notFound).json({ error: "History entry not found." }); return; }
+      if (outcome === "busy") { response.status(HTTP_STATUS.conflict).json({ error: "This entry is being processed. Try deleting it after processing finishes." }); return; }
+      response.status(HTTP_STATUS.ok).json({ runId: id, deleted: true });
+    } catch (error: unknown) { next(error); }
+  },
+  proposeRefinement: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
+    try {
+      const input = refinementInputSchema.parse(request.body);
+      const id = request.params.id;
+      const run = typeof id === "string" ? await repository.getRun(id) : null;
+      if (!run) { response.status(HTTP_STATUS.notFound).json({ error: "History entry not found." }); return; }
+      const currentPlan = presentRun(run).plan;
+      if (run.status !== "draft" || !currentPlan || run.deletingAt) { response.status(HTTP_STATUS.conflict).json({ error: "Only an available saved draft can be refined." }); return; }
+      let original: NonNullable<StoryAgentRunDocument["plan"]>;
+      try { original = withStoryContext(run.runId, currentPlan, run.stories); }
+      catch (error: unknown) { response.status(HTTP_STATUS.conflict).json({ error: error instanceof Error ? error.message : "Story context mapping is uncertain; the original is unchanged." }); return; }
+      if ((run.refinementVersion ?? 0) !== input.version || run.refinements?.some((proposal) => proposal.status === "pending")) { response.status(HTTP_STATUS.conflict).json({ error: "The draft changed or has a pending proposal. Reload it before continuing." }); return; }
+      if ((run.refinements?.length ?? 0) >= 20 || JSON.stringify(original).length > 24_000) { response.status(HTTP_STATUS.badRequest).json({ error: "This entry exceeds the refinement history or input size limit. Generate a smaller plan to continue." }); return; }
+      if (!planArtifacts(original).some((artifact) => artifact.path === input.artifactPath)) { response.status(HTTP_STATUS.badRequest).json({ error: "The selected artifact does not exist." }); return; }
+      const admission = capacity.acquire(request.socket.remoteAddress ?? "unknown");
+      if (admission.kind !== "accepted") { response.status(admission.kind === "rate_limited" ? HTTP_STATUS.tooManyRequests : HTTP_STATUS.serviceUnavailable).json({ error: "Refinement capacity is unavailable. Try again shortly." }); return; }
+      let pipeline: StoryAgentPipelineResult;
+      try { pipeline = await service.run({ requirement: run.requirement, ...(run.context ? { context: run.context } : {}), refinement: { original, artifactPath: input.artifactPath, instructions: input.instructions } }); }
+      finally { admission.release(); }
+      if (pipeline.status !== "draft" || !pipeline.plan) { response.status(HTTP_STATUS.serviceUnavailable).json({ error: "No valid refinement proposal was produced. The original is unchanged.", reason: pipeline.reason }); return; }
+      const changes = pipeline.refinementChanges ?? refinementChanges(original, pipeline.plan, input.artifactPath);
+      if (!changes.length) { response.status(HTTP_STATUS.unprocessableEntity).json({ error: "The provider proposed no changes to the selected artifact." }); return; }
+      const now = toIso(clock.now());
+      const proposal: StoryAgentRefinement = { id: randomUUID(), artifactPath: input.artifactPath, status: "pending", original, proposed: pipeline.plan, changes, quality: pipeline.quality ?? explainQuality(pipeline.plan, []), createdAt: now };
+      if (!await repository.saveRefinements(run.runId, input.version, [...(run.refinements ?? []), proposal], now)) { response.status(HTTP_STATUS.conflict).json({ error: "The draft changed during refinement. Reload it and try again." }); return; }
+      response.status(HTTP_STATUS.ok).json({ proposal, version: input.version + 1 });
+    } catch (error: unknown) { next(error); }
+  },
+  decideRefinement: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
+    try {
+      const input = refinementDecisionSchema.parse(request.body);
+      const id = request.params.id;
+      const run = typeof id === "string" ? await repository.getRun(id) : null;
+      if (!run) { response.status(HTTP_STATUS.notFound).json({ error: "History entry not found." }); return; }
+      const proposal = run.refinements?.find((item) => item.id === request.params.proposalId);
+      if (!proposal) { response.status(HTTP_STATUS.notFound).json({ error: "Refinement proposal not found." }); return; }
+      if (run.deletingAt || proposal.status !== "pending" || (run.refinementVersion ?? 0) !== input.version) { response.status(HTTP_STATUS.conflict).json({ error: "The proposal changed or has already been decided. Reload this entry." }); return; }
+      if (input.decision === "accept" && (!hasStoryContext(proposal.original) || !hasStoryContext(proposal.proposed))) { response.status(HTTP_STATUS.conflict).json({ error: "This proposal predates stable story context mapping. Reject it and request a new proposal; original content is retained." }); return; }
+      const now = toIso(clock.now());
+      const refinements = (run.refinements ?? []).map((item) => item.id === proposal.id ? { ...item, status: input.decision === "accept" ? "accepted" as const : "rejected" as const, decidedAt: now } : item);
+      if (!await repository.saveRefinements(run.runId, input.version, refinements, now)) { response.status(HTTP_STATUS.conflict).json({ error: "The entry changed. Reload it before deciding again." }); return; }
+      response.status(HTTP_STATUS.ok).json({ run: presentRun({ ...run, refinements, refinementVersion: input.version + 1, updatedAt: now }) });
+    } catch (error: unknown) { next(error); }
+  },
   createRun: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
     try {
       const input = requirementInputSchema.parse(request.body);
@@ -106,14 +178,14 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       await withStorySpan("story_agent.run.persist", { "story_agent.status": pipeline.status }, async () => { await repository.saveRun(runDocument(runId, input, pipeline, now)); });
       if (pipeline.status === "draft") {
         await repository.saveDraft({ runId, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), createdAt: toIso(now) });
-        response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), usage: pipeline.usage });
+        response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), ...(pipeline.quality ? { quality: pipeline.quality } : {}), usage: pipeline.usage });
         return;
       }
       if (pipeline.status === "questions") {
         response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, questions: pipeline.questions ?? [], usage: pipeline.usage });
         return;
       }
-      response.status(HTTP_STATUS.internalServerError).json({ runId, status: pipeline.status, error: pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed.", usage: pipeline.usage });
+      response.status(HTTP_STATUS.internalServerError).json({ runId, status: pipeline.status, error: pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed.", quality: pipeline.quality, usage: pipeline.usage });
     } catch (error: unknown) {
       next(error);
     }
@@ -123,7 +195,10 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       const limit = Number(request.query.limit ?? 20);
       const skip = Number(request.query.skip ?? 0);
       const runs = await repository.listRuns({ limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20, skip: Number.isInteger(skip) && skip >= 0 ? skip : 0 });
-      response.status(HTTP_STATUS.ok).json({ runs });
+      response.status(HTTP_STATUS.ok).json({ runs: runs.map((run) => {
+        const presented = run.refinements?.some((proposal) => proposal.status === "accepted") ? presentRun(run) : run;
+        return { ...presented, refinements: undefined };
+      }) });
     } catch (error: unknown) {
       next(error);
     }
@@ -152,7 +227,8 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
         return;
       }
       const draft = await repository.getDraftByRun(run.runId);
-      response.status(HTTP_STATUS.ok).json({ run, draft });
+      const presented = presentRun(run);
+      response.status(HTTP_STATUS.ok).json({ run: presented, draft: draft ? { ...draft, ...(presented.plan ? { plan: presented.plan } : {}), stories: presented.stories ?? draft.stories } : null });
     } catch (error: unknown) {
       next(error);
     }
