@@ -54,6 +54,20 @@ through GitHub Actions when a release requirement exists. No release framework i
 Commit signing is supported but not required because no established organization-wide signing policy
 exists. It may be enabled later through the GitHub ruleset after contributor readiness is confirmed.
 
+### Validate the squash message before merging
+
+Pull-request checks validate the branch commits. GitHub creates a new commit during squash merge,
+so an edited squash title or body also needs validation before merging. Write the exact proposed
+title, a blank line, and the body to an ignored local message file, then run:
+
+```text
+corepack pnpm run commitlint --edit .repo-cache/squash-message.txt --verbose
+```
+
+Wrap every body line at 100 characters or fewer and resolve all Commitlint errors before merging.
+Use that same validated title and body in GitHub's squash merge dialog or merge API request.
+Keep the existing Commitlint configuration and the required full validation checks enabled.
+
 ## GitHub ruleset
 
 The desired `main` policy is stored in `.github/rulesets/main.json`. It requires a pull request, one
