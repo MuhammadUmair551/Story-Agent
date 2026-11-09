@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { StoryAgentProjectRules } from "@workspace/types";
 import { projectRulesPrompt } from "./story-agent.projects.js";
 import { intelligencePrompt, titleMatchFindings, validateIntelligence, type IntelligenceInput } from "./story-agent.intelligence.js";
+import { evidencePrompt, exactTitleFindings, uniqueFindings, validateEvidence } from "./story-agent.evidence.js";
+import type { StoryAgentAnalysis } from "@workspace/types";
 import type { StoryAgentIntelligenceFinding } from "@workspace/types";
 import type { StoryAgentClarifications, StoryAgentPlan, StoryAgentStory, StoryAgentUsage, StoryAgentQualityReport, StoryAgentRefinementChange } from "@workspace/types";
 import { explainQuality } from "./story-agent.quality.js";
@@ -34,7 +36,7 @@ export type StoryAgentPipelineResult = Readonly<{
 
 export type StoryAgentPipelineInput = Readonly<{ requirement: string; context?: string | undefined; projectId?: string | undefined; projectRules?: StoryAgentProjectRules | undefined; existingItems?: readonly StoryAgentExistingItem[] | undefined; refinement?: RefinementInput }>;
 type PipelineDependencies = Readonly<{ route: StoryAgentProviderRouter; now: () => number; budget: StoryAgentBudget }>;
-export type StoryAgentIntelligenceResult = Readonly<{ status: "completed"; findings: readonly StoryAgentIntelligenceFinding[] }> | Readonly<{ status: "failed"; reason: string }>;
+export type StoryAgentIntelligenceResult = Readonly<{ status: "completed"; findings: readonly StoryAgentIntelligenceFinding[]; coverage?: StoryAgentAnalysis["coverage"] }> | Readonly<{ status: "failed"; reason: string }>;
 type GatheredContext = Readonly<{ text: string; titles: readonly string[] }>;
 type CompletionLedger = { calls: number; usage: StoryAgentUsage; providers: string[]; stages: StoryAgentStageOutcome[] };
 const promptCharacterLimit = (budget: StoryAgentBudget): number => budget.maxPromptCharacters ?? 24_000;
@@ -201,14 +203,21 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
   analyze: async (input: IntelligenceInput): Promise<StoryAgentIntelligenceResult> => {
     const ledger = emptyLedger(); const startedAt = dependencies.now();
     let prompt: string;
-    try { prompt = intelligencePrompt(input, promptCharacterLimit(dependencies.budget) / 4); }
+    try { prompt = input.evidenceVersion === 2 ? evidencePrompt(input, promptCharacterLimit(dependencies.budget)) : intelligencePrompt(input, promptCharacterLimit(dependencies.budget) / 4); }
     catch { return { status: "failed", reason: "context_limit" }; }
     let correction = "";
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const completion = await request("intelligence", "generate", prompt + correction, ledger, startedAt, dependencies);
       if (isPipelineResult(completion)) return { status: "failed", reason: completion.reason ?? "provider_failed" };
-      try { return { status: "completed", findings: [...titleMatchFindings(input), ...validateIntelligence(extractJson(completion.text), input)] }; }
-      catch { correction = "\nThe previous review failed schema/reference/evidence validation. Return the specified findings JSON using only exact existing paths and quotes. Do not invent references."; }
+      try {
+        if (input.evidenceVersion === 2) {
+          const validated = validateEvidence(extractJson(completion.text), input);
+          const findings = uniqueFindings([...exactTitleFindings(input), ...validated.findings]);
+          const limited = findings.length > 50;
+          return { status: "completed", findings: findings.slice(0, 50), coverage: { ...validated.coverage, status: limited ? "partial" : validated.coverage.status, reasons: [...validated.coverage.reasons, ...(limited ? ["The combined finding limit was reached; additional findings may exist."] : [])] } };
+        }
+        return { status: "completed", findings: [...titleMatchFindings(input), ...validateIntelligence(extractJson(completion.text), input)] };
+      } catch { correction = input.evidenceVersion === 2 ? "\nThe previous review failed schema/reference/evidence validation. Return the specified findings JSON using only exact existing fields, counterpart quotes and reviewedArtifacts. Do not invent references." : "\nThe previous review failed schema/reference/evidence validation. Return the specified findings JSON using only exact existing paths and quotes. Do not invent references."; }
     }
     return { status: "failed", reason: "invalid_intelligence_output" };
   },

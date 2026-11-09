@@ -11,6 +11,7 @@ import { createIntelligenceController } from "../story-agent.intelligence.contro
 import type { StoryAgentIntelligenceRepository } from "../story-agent.intelligence.repository.js";
 import type { IntelligenceInput } from "../story-agent.intelligence.js";
 import type { StoryAgentIntelligenceResult } from "../story-agent.service.js";
+import { createComparisonPageController, createFindingDecisionController } from "../story-agent.findings.controller.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult>; analyze?: (input: IntelligenceInput) => Promise<StoryAgentIntelligenceResult> }>;
@@ -27,9 +28,11 @@ export const createStoryAgentRoutes = ({ repository, projects, reviews, service,
   router.post("/story-agent/runs", controller.createRun);
   router.get("/story-agent/runs", controller.listRuns);
   router.get("/story-agent/runs/:id", controller.getRun);
+  router.get("/story-agent/runs/:id/comparisons", createComparisonPageController(repository, reviews));
   router.delete("/story-agent/runs/:id", controller.deleteRun);
   router.post("/story-agent/runs/:id/refinements", controller.proposeRefinement);
   router.post("/story-agent/runs/:id/refinements/:proposalId/decision", controller.decideRefinement);
   router.post("/story-agent/runs/:id/analyses", createIntelligenceController({ repository, reviews, capacity, analyze: service.analyze, now: clock.now }));
+  router.post("/story-agent/runs/:id/analyses/:analysisId/findings/:findingId/decision", createFindingDecisionController(repository, reviews, clock.now));
   return router;
 };

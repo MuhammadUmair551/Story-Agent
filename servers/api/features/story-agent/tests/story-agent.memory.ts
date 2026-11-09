@@ -4,6 +4,7 @@ const matches = (document: MongoDocument, filter: Readonly<Record<string, unknow
   if (key === "$or") return (value as Readonly<Record<string, unknown>>[]).some((condition) => matches(document, condition));
   const actual = document[key];
   if (typeof value === "object" && value !== null) {
+    if ("$ne" in value) return actual !== value.$ne;
     if ("$exists" in value) return (actual !== undefined) === value.$exists;
     if ("$lte" in value) return typeof actual === "string" && typeof value.$lte === "string" && actual <= value.$lte;
   }
@@ -25,8 +26,11 @@ export const createMemoryPersistence = (): Readonly<{ db: MongoPersistence; inde
     find: (filter, options) => {
       const items = (documents.get(name) ?? []).filter((document) => matches(document, filter));
       const sorted = options?.sort ? [...items].sort((left, right) => {
-        const [key, direction] = Object.entries(options.sort ?? {})[0] ?? ["", 1];
-        return String(left[key]).localeCompare(String(right[key])) * direction;
+        for (const [key, direction] of Object.entries(options.sort ?? {})) {
+          const result = String(left[key]).localeCompare(String(right[key])) * direction;
+          if (result !== 0) return result;
+        }
+        return 0;
       }) : items;
       return Promise.resolve(sorted.slice(options?.skip ?? 0, (options?.skip ?? 0) + (options?.limit ?? sorted.length)) as TDocument[]);
     },

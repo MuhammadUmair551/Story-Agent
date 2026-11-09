@@ -141,7 +141,7 @@ const refinementSchema = z.object({
   original: z.unknown().transform((value, ctx) => { const plan = asPlan(value); if (plan) return plan; ctx.addIssue({ code: "custom", message: "Invalid original plan." }); return z.NEVER; }),
   proposed: z.unknown().transform((value, ctx) => { const plan = asPlan(value); if (plan) return plan; ctx.addIssue({ code: "custom", message: "Invalid proposed plan." }); return z.NEVER; }),
   changes: z.array(z.object({ path: z.string(), explanation: z.string(), reason: z.string() })),
-  quality: qualitySchema, createdAt: z.string(), decidedAt: z.string().optional(), analysisId: z.string().optional(), requirementChange: z.object({ original: z.string(), proposed: z.string() }).optional()
+  quality: qualitySchema, createdAt: z.string(), decidedAt: z.string().optional(), analysisId: z.string().optional(), findingId: z.string().optional(), requirementChange: z.object({ original: z.string(), proposed: z.string() }).optional()
 }) satisfies z.ZodType<StoryAgentRefinement>;
 
 export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
@@ -203,7 +203,7 @@ const request = async (fetcher: Fetch, url: string, init?: RequestInit): Promise
   const payload = await readJson(response);
 
   if (!response.ok) {
-    throw new Error(getErrorMessage(payload));
+    throw Object.assign(new Error(getErrorMessage(payload)), { status: response.status });
   }
 
   return payload;
@@ -221,7 +221,14 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = fetch) 
     deleteRun: async (runId: string): Promise<void> => {
       await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}`, { method: "DELETE" });
     },
-    analyzeRun: async (runId: string, input: Readonly<{ kind: "backlog" | "impact"; version: number; updatedRequirement?: string | undefined; compareRunIds?: readonly string[] | undefined }>): Promise<void> => {
+    listComparisons: async (runId: string, skip = 0): Promise<Readonly<{ runs: readonly StoryAgentRun[]; hasMore: boolean; nextSkip: number }>> => {
+      const page = z.object({ runs: z.array(z.unknown()), hasMore: z.boolean(), nextSkip: z.number().int().nonnegative() }).parse(await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}/comparisons?limit=100&skip=${String(skip)}`));
+      return { ...page, runs: page.runs.map(parseStoryAgentRun) };
+    },
+    decideFinding: async (runId: string, analysisId: string, findingId: string, input: Readonly<{ decision: "confirm" | "dismiss" | "reopen"; reason: string; reviewVersion: number }>): Promise<void> => {
+      await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}/analyses/${encodeURIComponent(analysisId)}/findings/${encodeURIComponent(findingId)}/decision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
+    },
+    analyzeRun: async (runId: string, input: Readonly<{ kind: "backlog" | "impact"; version: number; updatedRequirement?: string | undefined; compareRunIds?: readonly string[] | undefined; evidenceVersion?: 2 | undefined }>): Promise<void> => {
       await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}/analyses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
     },
     proposeRefinement: async (runId: string, input: Readonly<{ artifactPath: string; instructions: string; version: number; analysisId?: string | undefined; findingId?: string | undefined }>): Promise<void> => {

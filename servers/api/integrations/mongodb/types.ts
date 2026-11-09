@@ -1,6 +1,6 @@
 export type MongoDocument = Readonly<Record<string, unknown>>;
 export type MongoReadFilter<TDocument extends MongoDocument> = Readonly<{
-  [Key in keyof TDocument]?: TDocument[Key] | Readonly<{ $exists: boolean }>;
+  [Key in keyof TDocument]?: TDocument[Key] | Readonly<{ $exists: boolean }> | Readonly<{ $ne: TDocument[Key] }>;
 }>;
 
 export type MongoInsertResult = Readonly<{ insertedId: unknown }>;

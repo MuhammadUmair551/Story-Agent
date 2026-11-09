@@ -10,6 +10,7 @@ import { activePlan, activeRequirement } from "./story-agent.refinement.js";
 import { legacyPlan } from "./story-agent.service.js";
 import { withStoryContext } from "./story-agent.metadata.js";
 import type { StoryAgentIntelligenceResult } from "./story-agent.service.js";
+import { retainFindingDecisions } from "./story-agent.evidence.js";
 
 export const createIntelligenceController = (dependencies: Readonly<{ repository: StoryAgentRepository; reviews: ReturnType<typeof createIntelligenceRepository>; capacity: StoryAgentCapacity; analyze?: ((input: IntelligenceInput) => Promise<StoryAgentIntelligenceResult>) | undefined; now: () => number }>) => async (request: Request, response: Response, next: NextFunction): Promise<void> => {
   try {
@@ -30,7 +31,7 @@ export const createIntelligenceController = (dependencies: Readonly<{ repository
     if (backlog.length > 25) { response.status(HTTP_STATUS.badRequest).json({ error: "More than 25 comparison entries. Select comparison IDs explicitly to limit scope." }); return; }
     const planFor = (run: StoryAgentRunDocument) => withStoryContext(run.runId, activePlan(run) ?? legacyPlan(activeRequirement(run), run.stories ?? []), run.stories);
     let analysisInput: IntelligenceInput;
-    try { analysisInput = { runId: source.runId, requirement, plan: planFor(source), updatedRequirement: input.updatedRequirement, projectRules: source.projectRules, backlog: backlog.map((run) => ({ runId: run.runId, requirement: activeRequirement(run), plan: planFor(run) })) }; }
+    try { analysisInput = { runId: source.runId, requirement, plan: planFor(source), updatedRequirement: input.updatedRequirement, projectRules: source.projectRules, evidenceVersion: input.evidenceVersion, backlog: backlog.map((run) => ({ runId: run.runId, requirement: activeRequirement(run), plan: planFor(run) })) }; }
     catch { response.status(HTTP_STATUS.conflict).json({ error: "Some story context cannot be mapped safely. Reconcile the saved entries before analysis." }); return; }
     if (!dependencies.analyze) { response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Semantic review is unavailable." }); return; }
     const admission = dependencies.capacity.acquire(request.socket.remoteAddress ?? "unknown");
@@ -38,13 +39,15 @@ export const createIntelligenceController = (dependencies: Readonly<{ repository
     let result: StoryAgentIntelligenceResult;
     try { result = await dependencies.analyze(analysisInput); } finally { admission.release(); }
     if (result.status !== "completed") { response.status(result.reason === "context_limit" ? HTTP_STATUS.badRequest : HTTP_STATUS.serviceUnavailable).json({ error: result.reason === "context_limit" ? "Analysis exceeds the context limit. Select fewer comparison entries or shorten the plan/rules." : "No validated semantic review was produced. Saved artifacts are unchanged.", reason: result.reason }); return; }
+    if (input.evidenceVersion === 2 && !result.coverage) { response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Evidence review did not return validated coverage. No report was saved." }); return; }
     // Compare every source again after the provider call; no stale review is saved.
     for (const run of [source, ...backlog]) {
       const current = await dependencies.repository.getRun(run.runId);
       if (!current || current.deletingAt || runFingerprint(current) !== runFingerprint(run)) { response.status(HTTP_STATUS.conflict).json({ error: "A compared entry changed during analysis. Reload and analyze again." }); return; }
     }
     const now = new Date(dependencies.now()).toISOString();
-    const analysis: StoryAgentAnalysis = { id: randomUUID(), kind: input.kind, originalRequirement: requirement, ...(input.updatedRequirement ? { updatedRequirement: input.updatedRequirement } : {}), sourceVersion: input.version, sourceFingerprint: runFingerprint(source), compared: backlog.map((run) => ({ runId: run.runId, fingerprint: runFingerprint(run) })), findings: result.findings, createdAt: now };
+    const analysis: StoryAgentAnalysis = { id: randomUUID(), kind: input.kind, originalRequirement: requirement, ...(input.updatedRequirement ? { updatedRequirement: input.updatedRequirement } : {}), sourceVersion: input.version, sourceFingerprint: runFingerprint(source), compared: backlog.map((run) => ({ runId: run.runId, fingerprint: runFingerprint(run) })), findings: input.evidenceVersion === 2 ? retainFindingDecisions(result.findings, source.analyses ?? []) : result.findings, createdAt: now, ...(input.evidenceVersion === 2 ? { evidenceVersion: 2, reviewVersion: 0, coverage: result.coverage } : {}) };
+    if (input.evidenceVersion === 2 && (Buffer.byteLength(JSON.stringify(analysis)) > 512_000 || Buffer.byteLength(JSON.stringify([...(source.analyses ?? []), analysis])) > 4_000_000)) { response.status(HTTP_STATUS.badRequest).json({ error: "Evidence history exceeds the storage budget. Reduce the comparison scope or use a new entry." }); return; }
     if (!await dependencies.reviews.save(source, analysis, now)) { response.status(HTTP_STATUS.conflict).json({ error: "The entry changed during analysis. Reload and analyze again." }); return; }
     response.json({ analysis, version: input.version + 1 });
   } catch (error: unknown) { next(error); }
