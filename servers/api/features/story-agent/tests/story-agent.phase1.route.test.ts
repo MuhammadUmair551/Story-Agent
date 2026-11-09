@@ -11,6 +11,8 @@ import { createErrorHandler } from "../../../middleware/index.js";
 import { createMemoryPersistence } from "./story-agent.memory.js";
 import { plan } from "./story-agent.fixture.js";
 import { artifactValue } from "../story-agent.refinement.js";
+import { createProjectRepository } from "../story-agent.projects.repository.js";
+import { createIntelligenceRepository } from "../story-agent.intelligence.repository.js";
 
 const logger: Logger = { info: () => undefined, warn: () => undefined, error: () => undefined };
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
@@ -30,7 +32,7 @@ const withApi = async (run: (input: Readonly<{ request: (path: string, method?: 
     if (typeof target !== "object" || target === null || !("title" in target) || typeof target.title !== "string") throw new Error("Unexpected test artifact.");
     target.title = path === "initiative" ? "Resume reading confidently" : `${target.title} clarified`;
     return providerFailure ? Promise.reject(new Error("Provider unavailable")) : Promise.resolve({ text: JSON.stringify(!data && input.messages[0]?.content.includes("needsClarification") ? { needsClarification: false, questions: [], assumptions: [] } : { plan: proposed, changes: [{ path: `${path}.title`, explanation: "Names the intended reader outcome.", reason: "Clarify the benefit of preserving a reading position." }] }), provider: "fake", model: "test", usage }); } } });
-  const app = express(); app.use(express.json()); app.use(createStoryAgentRoutes({ db: memory.db, logger, clock: { now: () => 0 }, repository, service, capacity: createStoryAgentCapacity({ maxConcurrentRuns: 10, maxRequestsPerWindow: 100, requestWindowMs: 60000, maxTrackedClients: 100, clock: { now: () => 0 } }) })); app.use(createErrorHandler({ logger }));
+  const app = express(); app.use(express.json()); app.use(createStoryAgentRoutes({ db: memory.db, logger, clock: { now: () => 0 }, repository, projects: createProjectRepository(memory.db), reviews: createIntelligenceRepository(memory.db), service, capacity: createStoryAgentCapacity({ maxConcurrentRuns: 10, maxRequestsPerWindow: 100, requestWindowMs: 60000, maxTrackedClients: 100, clock: { now: () => 0 } }) })); app.use(createErrorHandler({ logger }));
   const server = createServer(app);
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); assert.ok(address && typeof address === "object");

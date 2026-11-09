@@ -40,3 +40,17 @@ body { margin:0; background:var(--night); color:var(--ink); font-family:"Manrope
 @media (max-width: 700px) { .forge-proposal__comparison { grid-template-columns: 1fr; } .forge-quality { padding: 1rem; } }
 
 .forge-delete-dialog { background: var(--panel); color: var(--ink); border-color: var(--line); }
+.forge-project, .forge-rules-editor { display: grid; gap: 1rem; min-width: 0; }
+.forge-project { padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; margin-bottom: 2rem; }
+.forge-project summary { cursor: pointer; }
+.forge-rules-editor fieldset { padding: .75rem; border: 1px solid var(--line); border-radius: .5rem; display: grid; gap: .75rem; }
+.forge-rule-row { display: grid; gap: .5rem; padding: .75rem; border: 1px solid var(--line); min-width: 0; }
+.forge-rules-editor label { display: grid; gap: .25rem; }
+.forge-rules-editor button, .forge-project button { white-space: normal; overflow-wrap: anywhere; }
+.forge-intelligence { display: grid; gap: .75rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); min-width: 0; }
+.forge-intelligence label { display: grid; gap: .4rem; }
+.forge-intelligence article { display: grid; gap: .5rem; border-top: 1px solid var(--line); margin-top: .75rem; padding-top: .75rem; }
+.forge-intelligence li { overflow-wrap: anywhere; }
+.forge-comparisons { display: grid; gap: .75rem; min-width: 0; }
+.forge-intelligence .forge-comparisons label { display: flex; align-items: flex-start; gap: .75rem; overflow-wrap: anywhere; }
+.forge-comparisons small { display: block; opacity: .7; }

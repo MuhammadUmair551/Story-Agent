@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Textarea } from "@workspace/ui";
 import type { StoryAgentPlan, StoryAgentQualityReport, StoryAgentRun } from "../story-agent.types";
 import { createStoryAgentClient } from "../story-agent.client";
+import { IntelligenceReview } from "./intelligence-review";
 
 const artifacts = (plan: StoryAgentPlan): Readonly<{ path: string; label: string }>[] => [
   { path: "initiative", label: `Initiative: ${plan.initiative.title}` },
@@ -62,6 +63,7 @@ export const QualityReview = ({ run, client, onUpdated }: Readonly<{ run: StoryA
     {run.plan && !pending ? <><Textarea aria-label="Refinement request" maxLength={2000} value={instructions} onChange={(event) => setInstructions(event.target.value)} disabled={busy} /><Button disabled={busy || !instructions.trim()} onClick={() => { void perform(() => client.proposeRefinement(run.runId, { artifactPath: path, instructions: instructions.trim(), version: run.refinementVersion ?? 0 }), "Proposal saved. Review the changes before deciding."); }}>{busy ? "Preparing proposal…" : "Propose refinement"}</Button></> : null}
     {pending ? <article className="forge-proposal" aria-label="Refinement proposal">
       <h4>Proposed revision</h4>
+      {pending.requirementChange ? <dl><dt>Original requirement</dt><dd>{pending.requirementChange.original}</dd><dt>Proposed requirement</dt><dd>{pending.requirementChange.proposed}</dd></dl> : null}
       <p>{options.find((option) => option.path === pending.artifactPath)?.label ?? pending.artifactPath}</p>
       {pending.changes.map((change) => <div key={change.path}><b>{changeLabel(change.path)}</b><p>{change.explanation}</p><p>Reason: {change.reason}</p></div>)}
       <div className="forge-proposal__comparison"><div><h5>Original artifact</h5><div className="forge-snapshot"><ArtifactSnapshot value={selectedValue(pending.original, pending.artifactPath)} /></div></div><div><h5>Proposed artifact</h5><div className="forge-snapshot"><ArtifactSnapshot value={selectedValue(pending.proposed, pending.artifactPath)} /></div></div></div>
@@ -69,7 +71,8 @@ export const QualityReview = ({ run, client, onUpdated }: Readonly<{ run: StoryA
       <Button disabled={busy} onClick={() => { void perform(() => client.decideRefinement(run.runId, pending.id, "accept", run.refinementVersion ?? 0), "Refinement accepted. The original remains in revision history."); }}>Accept proposal</Button>
       <Button variant="outline" disabled={busy} onClick={() => { void perform(() => client.decideRefinement(run.runId, pending.id, "reject", run.refinementVersion ?? 0), "Proposal rejected. The active plan is unchanged."); }}>Reject proposal</Button>
     </article> : null}
-    {run.refinements?.filter((proposal) => proposal.status !== "pending").map((proposal) => <details key={proposal.id}><summary>{proposal.status} revision · {proposal.decidedAt}</summary>{proposal.changes.map((change) => <p key={change.path}>{changeLabel(change.path)}: {change.explanation} {change.reason}</p>)}<h5>Original</h5><div className="forge-snapshot"><ArtifactSnapshot value={selectedValue(proposal.original, proposal.artifactPath)} /></div><h5>Proposed</h5><div className="forge-snapshot"><ArtifactSnapshot value={selectedValue(proposal.proposed, proposal.artifactPath)} /></div></details>)}
+    {run.refinements?.filter((proposal) => proposal.status !== "pending").map((proposal) => <details key={proposal.id}><summary>{proposal.status} revision · {proposal.decidedAt}</summary>{proposal.requirementChange ? <dl><dt>Original requirement</dt><dd>{proposal.requirementChange.original}</dd><dt>Proposed requirement</dt><dd>{proposal.requirementChange.proposed}</dd></dl> : null}{proposal.changes.map((change) => <p key={change.path}>{changeLabel(change.path)}: {change.explanation} {change.reason}</p>)}<h5>Original</h5><div className="forge-snapshot"><ArtifactSnapshot value={selectedValue(proposal.original, proposal.artifactPath)} /></div><h5>Proposed</h5><div className="forge-snapshot"><ArtifactSnapshot value={selectedValue(proposal.proposed, proposal.artifactPath)} /></div></details>)}
+    {run.status === "draft" ? <IntelligenceReview key={`${run.runId}:${run.requirement}`} run={run} client={client} onUpdated={onUpdated} /> : null}
     <p role="status" aria-live="polite">{message}</p>
   </section>;
 };

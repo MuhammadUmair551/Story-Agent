@@ -7,6 +7,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@workspace/ui";
 import { QualityReview } from "./quality-review";
+import { ProjectRules } from "./project-rules";
+import type { StoryAgentProject } from "@workspace/types";
 import { deleteConfirmedHistoryEntry } from "../story-agent.history";
 import { buildStoryAgentRunCopyText, createStoryAgentClient, filterStoryAgentRuns } from "../story-agent.client";
 import type { StoryAgentPlan, StoryAgentRun, StoryAgentStory } from "../story-agent.types";
@@ -61,6 +63,14 @@ export const StoryForge = ({ apiBaseUrl }: StoryForgeProps): React.JSX.Element =
   const [deleteTarget, setDeleteTarget] = useState<StoryAgentRun | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [projects, setProjects] = useState<readonly StoryAgentProject[]>([]);
+  const [projectId, setProjectId] = useState("");
+  const [projectError, setProjectError] = useState("");
+  useEffect(() => {
+    let active = true;
+    void client.listProjects().then((items) => { if (active) { setProjects(items); setProjectError(""); } }).catch(() => { if (active) setProjectError("Project rules could not be loaded. You can still generate without project rules."); });
+    return () => { active = false; };
+  }, [client]);
 
   const loadHistory = useCallback(async (): Promise<void> => {
     setIsHistoryLoading(true);
@@ -96,10 +106,10 @@ export const StoryForge = ({ apiBaseUrl }: StoryForgeProps): React.JSX.Element =
     if (!requirement || isLoading) return;
     const id = requestRef.current + 1; requestRef.current = id;
     setIsLoading(true); setRun(null);
-    try { const result = await client.createRun({ requirement }); if (id === requestRef.current) { setRun({ ...result, requirement }); setInput(""); void loadHistory(); } }
+    try { const result = await client.createRun({ requirement, ...(projectId ? { projectId } : {}) }); if (id === requestRef.current) { setRun({ ...result, requirement, ...(projectId ? { projectId } : {}) }); setInput(""); void loadHistory(); } }
     catch (error: unknown) { if (id === requestRef.current) setRun({ runId: "", status: "failed", requirement, error: error instanceof Error ? error.message : "The forge could not shape that brief." }); }
     finally { if (id === requestRef.current) setIsLoading(false); }
-  }, [client, input, isLoading, loadHistory]);
+  }, [client, input, isLoading, loadHistory, projectId]);
   const selectRun = useCallback(async (runId: string): Promise<void> => {
     const id = ++requestRef.current;
     setView("forge"); setIsLoading(true); setFeedback("");
@@ -133,6 +143,7 @@ export const StoryForge = ({ apiBaseUrl }: StoryForgeProps): React.JSX.Element =
       <header className="forge-topbar"><button className="forge-menu" type="button" aria-label="Open navigation" onClick={() => setIsMobileMenuOpen(true)}><Menu /></button><div className="forge-breadcrumb"><span>Workspace</span><ChevronRight /><b>{view === "forge" ? "Story forge" : "Story vault"}</b></div><button className="forge-new" type="button" onClick={startFresh}><Plus /> New story</button></header>
       <p className="forge-feedback" role="status" aria-live="polite">{feedback}</p>
       {view === "archive" ? <section className="forge-archive"><header><div><p className="forge-kicker">The record room</p><h1>Story vault</h1><p>Every idea you have asked the forge to shape.</p></div><div className="forge-mascot-mini" aria-hidden="true"><Aperture /></div></header><label className="forge-search"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search every story, epic, or question" /></label><div className="forge-archive__list">{isHistoryLoading ? <p>Opening the vault…</p> : shownHistory.length ? shownHistory.map((item) => <div className="forge-history-entry" key={item.runId}><button className="forge-history-entry__open" type="button" onClick={() => { void selectRun(item.runId); }}><span className="forge-archive__glyph"><BookOpen /></span><span><b>{item.requirement || "Untitled story"}</b><small>{item.stories?.length ?? 0} story slices · {statusLabel(item.status)}</small></span><ChevronRight /></button><Button variant="ghost" size="icon" className="forge-history-entry__delete" aria-label={`Delete history entry: ${item.requirement || "Untitled story"}`} onClick={() => { setFeedback(""); setDeleteTarget(item); }}><Trash2 aria-hidden="true" /></Button></div>) : <p>No stories have been saved yet. Start at the forge.</p>}</div></section> : <section className="forge-canvas">
+        <ProjectRules projects={projects} selectedId={projectId} onSelect={setProjectId} onSaved={(saved) => { setProjects((items) => [saved, ...items.filter((item) => item.projectId !== saved.projectId)]); setProjectId(saved.projectId); setProjectError(""); setFeedback("Project rules saved. New generations use this version."); }} client={client} loadError={projectError} />
         <div className="forge-hero"><div className="forge-hero__copy"><p className="forge-kicker">Story architecture</p><h1>What will your<br /><em>next chapter</em> change?</h1><p>Give your idea a pulse. We will find the small, testable stories hiding inside it.</p></div><div className={`forge-character ${isLoading ? "forge-character--thinking" : ""}`} aria-hidden="true"><span className="forge-spark forge-spark--one" /><span className="forge-spark forge-spark--two" /><span className="forge-character__halo" /><span className="forge-signal"><i /><i /><i /></span><div className="forge-character__note">Signal received<br /><i>shaping the thread</i></div></div></div>
         <form className="forge-prompt" onSubmit={submit}><div className="forge-prompt__top"><span className="forge-prompt__badge"><Sparkles /> Tell me a tale</span><span>⌘ J to focus</span></div><textarea ref={inputRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="A reader wants to feel something new…" aria-label="Describe the product outcome you want to shape" /><div className="forge-prompt__footer"><span>Be messy. The forge likes rough ideas.</span><Button type="submit" disabled={isLoading || !input.trim()} className="forge-submit">{isLoading ? <LoaderCircle className="forge-spin" /> : <ArrowUpRight />} Shape it</Button></div></form>
         {isLoading ? <div className="forge-loading"><span className="forge-loading__signal"><i /><i /><i /></span><div><b>Finding the thread…</b><p>Listening for actors, outcomes, and delightful little constraints.</p></div><span className="forge-loading__dots">•••</span></div> : null}

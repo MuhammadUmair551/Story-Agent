@@ -20,3 +20,5 @@ export type {
   StoryAgentTask,
   StoryAgentUsage
 } from "./story-agent/index.js";
+export type { StoryAgentProject, StoryAgentProjectInput, StoryAgentProjectRules } from "./story-agent/index.js";
+export type { StoryAgentAnalysis, StoryAgentArtifactReference, StoryAgentIntelligenceFinding } from "./story-agent/index.js";

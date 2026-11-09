@@ -1,11 +1,11 @@
 import type { Logger } from "@workspace/logging";
 import type { StoryAgentRepository, StoryAgentRunDocument } from "./story-agent.repository.js";
-import type { StoryAgentPipelineResult } from "./story-agent.service.js";
+import type { StoryAgentPipelineInput, StoryAgentPipelineResult } from "./story-agent.service.js";
 import type { StoryAgentCapacity } from "./story-agent.capacity.js";
 import { recordQueueEvent, recordQueueProcessing, recordQueueWait, setQueueSnapshot, withStorySpan } from "./story-agent.telemetry.js";
 
 type Clock = Readonly<{ now: () => number }>;
-type Service = Readonly<{ run: (input: Readonly<{ requirement: string; context?: string | undefined }>) => Promise<StoryAgentPipelineResult> }>;
+type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult> }>;
 type QueueDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; logger: Logger; clock: Clock; intervalMs: number; capacity?: StoryAgentCapacity | undefined }>;
 
 const lockDurationMs = 5 * 60 * 1_000;
@@ -62,7 +62,7 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
         return;
       }
       try {
-        const result = await service.run({ requirement: run.requirement, ...(run.context ? { context: run.context } : {}) });
+        const result = await service.run({ requirement: run.requirement, ...(run.context ? { context: run.context } : {}), ...(run.projectId ? { projectId: run.projectId, projectRules: run.projectRules } : {}) });
         if (result.status === "draft") {
           await repository.saveDraft({ runId: run.runId, stories: result.stories ?? [], ...(result.plan ? { plan: result.plan } : {}), createdAt: now });
           await repository.updateRunStatus(run.runId, "draft", resultFields(result, now));

@@ -26,6 +26,9 @@ export const mergeRefinedArtifact = (input: RefinementInput, candidate: StoryAge
 export const activePlan = (run: Readonly<{ plan?: StoryAgentPlan | undefined; refinements?: readonly StoryAgentRefinement[] | undefined }>): StoryAgentPlan | undefined =>
   [...(run.refinements ?? [])].reverse().find((proposal) => proposal.status === "accepted")?.proposed ?? run.plan;
 
+export const activeRequirement = (run: Readonly<{ requirement: string; refinements?: readonly StoryAgentRefinement[] | undefined }>): string =>
+  [...(run.refinements ?? [])].reverse().find((proposal) => proposal.status === "accepted" && proposal.requirementChange)?.requirementChange?.proposed ?? run.requirement;
+
 export const refinementChanges = (original: StoryAgentPlan, proposed: StoryAgentPlan, path: string): readonly StoryAgentRefinementChange[] => {
   const changes: StoryAgentRefinementChange[] = [];
   const compare = (before: unknown, after: unknown, currentPath: string): void => {

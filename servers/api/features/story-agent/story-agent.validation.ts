@@ -11,6 +11,7 @@ const text = z.string().trim().min(1);
 
 export const requirementInputSchema = z.object({
   requirement: text.max(4_000),
+  projectId: z.uuid().optional(),
   context: z.string().trim().max(8_000).optional()
 }) satisfies z.ZodType<StoryAgentRequirementInput>;
 
@@ -71,8 +72,10 @@ export const planSchema = z.object({
 export const runStatusSchema = z.enum(["questions", "draft", "failed", "queued"]) satisfies z.ZodType<StoryAgentRunStatus>;
 
 export const refinementInputSchema = z.object({
+  analysisId: z.uuid().optional(),
+  findingId: text.max(100).optional(),
   artifactPath: text.max(240).regex(/^initiative(?:\.epics\.\d+(?:\.features\.\d+(?:\.stories\.\d+(?:\.tasks\.\d+)?)?)?)?$/),
   instructions: text.max(2_000),
   version: z.number().int().nonnegative()
-});
+}).superRefine((input, ctx) => { if (Boolean(input.analysisId) !== Boolean(input.findingId)) ctx.addIssue({ code: "custom", message: "Analysis and finding IDs must be supplied together." }); });
 export const refinementDecisionSchema = z.object({ decision: z.enum(["accept", "reject"]), version: z.number().int().nonnegative() });
