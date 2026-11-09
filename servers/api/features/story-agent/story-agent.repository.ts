@@ -11,6 +11,7 @@ export type StoryAgentRunDocument = Readonly<Record<string, unknown>> & Readonly
   projectId?: string | undefined;
   projectRules?: StoryAgentProjectRules | undefined;
   analyses?: readonly StoryAgentAnalysis[] | undefined;
+  intelligenceReviewVersion?: number | undefined;
   context?: string | undefined;
   questions?: readonly string[] | undefined;
   stories?: readonly StoryAgentStory[] | undefined;
@@ -53,7 +54,7 @@ export type StoryAgentRepository = Readonly<{
   claimQueuedRun: (now: string, lockedUntil: string) => Promise<StoryAgentRunDocument | null>;
   ensureIndexes: () => Promise<void>;
   deleteRun: (runId: string, now: string) => Promise<"deleted" | "missing" | "busy">;
-  saveRefinements: (runId: string, expectedVersion: number, refinements: readonly StoryAgentRefinement[], now: string) => Promise<boolean>;
+  saveRefinements: (runId: string, expectedVersion: number, refinements: readonly StoryAgentRefinement[], now: string, expectedReviewVersion?: number) => Promise<boolean>;
 }>;
 
 export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepository => {
@@ -68,8 +69,9 @@ export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepo
     listRuns: async ({ limit, skip }): Promise<StoryAgentRunDocument[]> => await runs.find({}, { sort: { createdAt: -1 }, limit, skip }),
     saveDraft: async (document): Promise<void> => { await drafts.insertOne(document); },
     getDraftByRun: async (runId): Promise<StoryAgentDraftDocument | null> => await drafts.findOne({ runId }),
-    saveRefinements: async (runId, expectedVersion, refinements, now): Promise<boolean> => Boolean(await runs.findOneAndUpdate({
+    saveRefinements: async (runId, expectedVersion, refinements, now, expectedReviewVersion): Promise<boolean> => Boolean(await runs.findOneAndUpdate({
       runId, deletingAt: { $exists: false },
+      ...(expectedReviewVersion === undefined ? {} : { intelligenceReviewVersion: expectedReviewVersion }),
       ...(expectedVersion === 0 ? { $or: [{ refinementVersion: 0 }, { refinementVersion: { $exists: false } }] } : { refinementVersion: expectedVersion })
     }, { $set: { refinements, refinementVersion: expectedVersion + 1, updatedAt: now } })),
     deleteRun: async (runId, now) => {

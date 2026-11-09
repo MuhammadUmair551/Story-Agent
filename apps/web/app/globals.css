@@ -54,3 +54,12 @@ body { margin:0; background:var(--night); color:var(--ink); font-family:"Manrope
 .forge-comparisons { display: grid; gap: .75rem; min-width: 0; }
 .forge-intelligence .forge-comparisons label { display: flex; align-items: flex-start; gap: .75rem; overflow-wrap: anywhere; }
 .forge-comparisons small { display: block; opacity: .7; }
+.forge-evidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.forge-evidence__field { min-width: 0; padding: .75rem; background: var(--panel); border: 1px solid var(--line); border-radius: .5rem; overflow-wrap: anywhere; }
+.forge-evidence__field small { display: block; }
+.forge-evidence__field blockquote { white-space: pre-wrap; }
+.forge-evidence__field mark { background: var(--line); color: var(--ink); }
+.forge-finding-filters, .forge-finding-actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+.forge-finding-filters > label { flex: 1 1 10rem; min-width: 0; }
+.forge-finding-actions button { white-space: normal; }
+@media (max-width: 700px) { .forge-evidence { grid-template-columns: 1fr; } }

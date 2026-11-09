@@ -5,7 +5,7 @@ import { planArtifacts } from "./story-agent.quality.js";
 import { activePlan, activeRequirement, artifactValue } from "./story-agent.refinement.js";
 import type { StoryAgentRunDocument } from "./story-agent.repository.js";
 
-export type IntelligenceInput = Readonly<{ runId: string; requirement: string; updatedRequirement?: string | undefined; plan: StoryAgentPlan; backlog: readonly Readonly<{ runId: string; requirement: string; plan: StoryAgentPlan }>[]; projectRules?: StoryAgentProjectRules | undefined }>;
+export type IntelligenceInput = Readonly<{ runId: string; requirement: string; updatedRequirement?: string | undefined; plan: StoryAgentPlan; backlog: readonly Readonly<{ runId: string; requirement: string; plan: StoryAgentPlan }>[]; projectRules?: StoryAgentProjectRules | undefined; evidenceVersion?: 2 | undefined }>;
 const path = z.string().max(240).regex(/^initiative(?:\.epics\.\d+(?:\.features\.\d+(?:\.stories\.\d+(?:\.tasks\.\d+)?)?)?)?$/);
 const reference = z.object({ runId: z.string().min(1).max(100), artifactPath: path });
 const findingSchema = z.object({
@@ -14,9 +14,10 @@ const findingSchema = z.object({
   evidence: z.array(reference.extend({ quote: z.string().trim().min(1).max(1000) })).min(1).max(6),
   dependencies: z.array(reference).max(10)
 }).strict();
-export const analysisRequestSchema = z.object({ kind: z.enum(["backlog", "impact"]), updatedRequirement: z.string().trim().min(1).max(4000).optional(), compareRunIds: z.array(z.string().min(1).max(100)).max(25).optional(), version: z.number().int().nonnegative() }).strict().superRefine((input, ctx) => {
+export const analysisRequestSchema = z.object({ kind: z.enum(["backlog", "impact"]), updatedRequirement: z.string().trim().min(1).max(4000).optional(), compareRunIds: z.array(z.string().min(1).max(100)).max(25).optional(), version: z.number().int().nonnegative(), evidenceVersion: z.literal(2).optional() }).strict().superRefine((input, ctx) => {
   if ((input.kind === "impact") !== (input.updatedRequirement !== undefined)) ctx.addIssue({ code: "custom", message: "Impact analysis requires an updated requirement; backlog review does not accept one." });
   if (new Set(input.compareRunIds).size !== input.compareRunIds?.length && input.compareRunIds) ctx.addIssue({ code: "custom", message: "Comparison entries must be unique." });
+  if (input.evidenceVersion && input.kind !== "backlog") ctx.addIssue({ code: "custom", message: "Evidence-based backlog review does not change the impact analysis contract." });
 });
 export const runFingerprint = (run: StoryAgentRunDocument): string => createHash("sha256").update(JSON.stringify({ requirement: activeRequirement(run), plan: activePlan(run), stories: run.stories, projectId: run.projectId, rules: run.projectRules, version: run.refinementVersion ?? 0 })).digest("hex");
 export const intelligencePrompt = (input: IntelligenceInput, contextTokenLimit: number): string => {

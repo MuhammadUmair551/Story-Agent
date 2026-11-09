@@ -100,6 +100,7 @@ export type StoryAgentRefinement = Readonly<{
   createdAt: string;
   decidedAt?: string | undefined;
   analysisId?: string | undefined;
+  findingId?: string | undefined;
   requirementChange?: Readonly<{ original: string; proposed: string }> | undefined;
 }>;
 

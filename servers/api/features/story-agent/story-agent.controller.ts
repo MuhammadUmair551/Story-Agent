@@ -15,6 +15,7 @@ import { explainQuality, planArtifacts } from "./story-agent.quality.js";
 import { flattenPlan, legacyPlan, validatePlan } from "./story-agent.service.js";
 import type { StoryAgentRefinement } from "@workspace/types";
 import type { StoryAgentProjectRepository } from "./story-agent.projects.repository.js";
+import { presentAnalysisFreshness } from "./story-agent.findings.controller.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult> }>;
@@ -116,10 +117,11 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       if ((run.refinements?.length ?? 0) >= 20 || JSON.stringify(original).length > 24_000) { response.status(HTTP_STATUS.badRequest).json({ error: "This entry exceeds the refinement history or input size limit. Generate a smaller plan to continue." }); return; }
       if (!planArtifacts(original).some((artifact) => artifact.path === input.artifactPath)) { response.status(HTTP_STATUS.badRequest).json({ error: "The selected artifact does not exist." }); return; }
       const analysis = input.analysisId ? run.analyses?.find((item) => item.id === input.analysisId) : undefined;
+      let reviewVersion = run.intelligenceReviewVersion;
       if (input.analysisId) {
         const finding = analysis?.findings.find((item) => item.id === input.findingId && item.artifactPath === input.artifactPath);
         const compared = await Promise.all((analysis?.compared ?? []).map(async (item) => await repository.getRun(item.runId)));
-        if (!analysis || !finding || compared.some((item) => !item) || !analysisIsCurrent(analysis, run, compared.filter((item): item is StoryAgentRunDocument => item !== null))) { response.status(HTTP_STATUS.conflict).json({ error: "This analysis is stale or the selected finding does not match. Analyze the saved entry again." }); return; }
+        if (!analysis || !finding || finding.review?.status === "dismissed" || compared.some((item) => !item) || !analysisIsCurrent(analysis, run, compared.filter((item): item is StoryAgentRunDocument => item !== null))) { response.status(HTTP_STATUS.conflict).json({ error: "This analysis is stale, dismissed or the selected finding does not match. Analyze the saved entry again." }); return; }
       }
       const requirement = analysis?.updatedRequirement ?? activeRequirement(run);
       const admission = capacity.acquire(request.socket.remoteAddress ?? "unknown");
@@ -131,12 +133,18 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       const changes = pipeline.refinementChanges ?? refinementChanges(original, pipeline.plan, input.artifactPath);
       if (!changes.length) { response.status(HTTP_STATUS.unprocessableEntity).json({ error: "The provider proposed no changes to the selected artifact." }); return; }
       if (analysis) {
+        if (analysis.evidenceVersion === 2) {
+          const current = await repository.getRun(run.runId);
+          const currentFinding = current?.analyses?.find((item) => item.id === analysis.id)?.findings.find((item) => item.id === input.findingId);
+          if (!current || !currentFinding || currentFinding.review?.status === "dismissed") { response.status(HTTP_STATUS.conflict).json({ error: "The finding was dismissed or removed while preparing the proposal." }); return; }
+          reviewVersion = current.intelligenceReviewVersion;
+        }
         const compared = await Promise.all(analysis.compared.map(async (item) => await repository.getRun(item.runId)));
         if (compared.some((item) => !item) || !analysisIsCurrent(analysis, run, compared.filter((item): item is StoryAgentRunDocument => item !== null))) { response.status(HTTP_STATUS.conflict).json({ error: "A compared entry changed while preparing the proposal. Analyze again." }); return; }
       }
       const now = toIso(clock.now());
-      const proposal: StoryAgentRefinement = { id: randomUUID(), artifactPath: input.artifactPath, status: "pending", original, proposed: pipeline.plan, changes, quality: pipeline.quality ?? explainQuality(pipeline.plan, [], run.projectRules), createdAt: now, ...(analysis ? { analysisId: analysis.id } : {}), ...(analysis?.updatedRequirement ? { requirementChange: { original: activeRequirement(run), proposed: requirement } } : {}) };
-      if (!await repository.saveRefinements(run.runId, input.version, [...(run.refinements ?? []), proposal], now)) { response.status(HTTP_STATUS.conflict).json({ error: "The draft changed during refinement. Reload it and try again." }); return; }
+      const proposal: StoryAgentRefinement = { id: randomUUID(), artifactPath: input.artifactPath, status: "pending", original, proposed: pipeline.plan, changes, quality: pipeline.quality ?? explainQuality(pipeline.plan, [], run.projectRules), createdAt: now, ...(analysis ? { analysisId: analysis.id, findingId: input.findingId } : {}), ...(analysis?.updatedRequirement ? { requirementChange: { original: activeRequirement(run), proposed: requirement } } : {}) };
+      if (!await repository.saveRefinements(run.runId, input.version, [...(run.refinements ?? []), proposal], now, analysis?.evidenceVersion === 2 ? reviewVersion : undefined)) { response.status(HTTP_STATUS.conflict).json({ error: "The draft or finding changed during refinement. Reload it and try again." }); return; }
       response.status(HTTP_STATUS.ok).json({ proposal, version: input.version + 1 });
     } catch (error: unknown) { next(error); }
   },
@@ -152,12 +160,16 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       if (input.decision === "accept" && (!hasStoryContext(proposal.original) || !hasStoryContext(proposal.proposed))) { response.status(HTTP_STATUS.conflict).json({ error: "This proposal predates stable story context mapping. Reject it and request a new proposal; original content is retained." }); return; }
       if (input.decision === "accept" && proposal.analysisId) {
         const analysis = run.analyses?.find((item) => item.id === proposal.analysisId);
+        if (analysis?.evidenceVersion === 2) {
+          const finding = analysis.findings.find((item) => item.id === proposal.findingId);
+          if (!finding || finding.review?.status === "dismissed") { response.status(HTTP_STATUS.conflict).json({ error: "This finding is missing or dismissed. Reject the proposal or reopen the finding before accepting." }); return; }
+        }
         const compared = await Promise.all((analysis?.compared ?? []).map(async (item) => await repository.getRun(item.runId)));
         if (!analysis || compared.some((item) => !item) || !analysisIsCurrent(analysis, run, compared.filter((item): item is StoryAgentRunDocument => item !== null), "decision")) { response.status(HTTP_STATUS.conflict).json({ error: "The analysis is stale. Reject this proposal and analyze again before accepting an update." }); return; }
       }
       const now = toIso(clock.now());
       const refinements = (run.refinements ?? []).map((item) => item.id === proposal.id ? { ...item, status: input.decision === "accept" ? "accepted" as const : "rejected" as const, decidedAt: now } : item);
-      if (!await repository.saveRefinements(run.runId, input.version, refinements, now)) { response.status(HTTP_STATUS.conflict).json({ error: "The entry changed. Reload it before deciding again." }); return; }
+      if (!await repository.saveRefinements(run.runId, input.version, refinements, now, proposal.findingId ? run.intelligenceReviewVersion : undefined)) { response.status(HTTP_STATUS.conflict).json({ error: "The entry changed. Reload it before deciding again." }); return; }
       response.status(HTTP_STATUS.ok).json({ run: presentRun({ ...run, refinements, refinementVersion: input.version + 1, updatedAt: now }) });
     } catch (error: unknown) { next(error); }
   },
@@ -250,7 +262,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
         return;
       }
       const draft = await repository.getDraftByRun(run.runId);
-      const presented = presentRun(run);
+      const presented = presentRun(await presentAnalysisFreshness(run, repository));
       response.status(HTTP_STATUS.ok).json({ run: presented, draft: draft ? { ...draft, ...(presented.plan ? { plan: presented.plan } : {}), stories: presented.stories ?? draft.stories } : null });
     } catch (error: unknown) {
       next(error);
