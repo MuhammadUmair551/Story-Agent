@@ -1,4 +1,8 @@
 import { z } from "zod";
+import type { StoryAgentProjectRules } from "@workspace/types";
+import { projectRulesPrompt } from "./story-agent.projects.js";
+import { intelligencePrompt, titleMatchFindings, validateIntelligence, type IntelligenceInput } from "./story-agent.intelligence.js";
+import type { StoryAgentIntelligenceFinding } from "@workspace/types";
 import type { StoryAgentClarifications, StoryAgentPlan, StoryAgentStory, StoryAgentUsage, StoryAgentQualityReport, StoryAgentRefinementChange } from "@workspace/types";
 import { explainQuality } from "./story-agent.quality.js";
 import { mergeRefinedArtifact, refinementPrompt, refinementChanges, type RefinementInput } from "./story-agent.refinement.js";
@@ -11,7 +15,7 @@ import * as repairPrompt from "./story-agent.repair.prompt.js";
 import { recordValidationEvent, withStoryStageSpan } from "./story-agent.telemetry.js";
 
 export type StoryAgentExistingItem = Readonly<{ level: "initiative" | "epic" | "feature" | "story"; title: string }>;
-export type StoryAgentBudget = Readonly<{ maxCalls: number; maxTotalTokens: number; timeoutMs: number; contextTokenLimit: number; maxStories: number }>;
+export type StoryAgentBudget = Readonly<{ maxCalls: number; maxTotalTokens: number; timeoutMs: number; contextTokenLimit: number; maxPromptCharacters?: number; maxStories: number }>;
 export type StoryAgentStageOutcome = Readonly<{ stage: string; status: "completed" | "skipped" | "failed"; detail?: string }>;
 export type StoryAgentPipelineResult = Readonly<{
   status: "questions" | "draft" | "failed" | "queued";
@@ -28,10 +32,12 @@ export type StoryAgentPipelineResult = Readonly<{
   reason?: string;
 }>;
 
-export type StoryAgentPipelineInput = Readonly<{ requirement: string; context?: string | undefined; existingItems?: readonly StoryAgentExistingItem[] | undefined; refinement?: RefinementInput }>;
+export type StoryAgentPipelineInput = Readonly<{ requirement: string; context?: string | undefined; projectId?: string | undefined; projectRules?: StoryAgentProjectRules | undefined; existingItems?: readonly StoryAgentExistingItem[] | undefined; refinement?: RefinementInput }>;
 type PipelineDependencies = Readonly<{ route: StoryAgentProviderRouter; now: () => number; budget: StoryAgentBudget }>;
+export type StoryAgentIntelligenceResult = Readonly<{ status: "completed"; findings: readonly StoryAgentIntelligenceFinding[] }> | Readonly<{ status: "failed"; reason: string }>;
 type GatheredContext = Readonly<{ text: string; titles: readonly string[] }>;
 type CompletionLedger = { calls: number; usage: StoryAgentUsage; providers: string[]; stages: StoryAgentStageOutcome[] };
+const promptCharacterLimit = (budget: StoryAgentBudget): number => budget.maxPromptCharacters ?? 24_000;
 
 const intakeSchema = z.object({ requirement: z.string().trim().min(1).max(4_000), context: z.string().trim().max(8_000).optional() });
 const clarifyResponseSchema = z.object({
@@ -170,6 +176,10 @@ const request = async (
   if (ledger.calls >= dependencies.budget.maxCalls || runtimeBudgetExceeded(ledger, startedAt, dependencies)) {
     return result(ledger, "failed", [], { reason: "over_budget" });
   }
+  if (prompt.length > promptCharacterLimit(dependencies.budget)) {
+    ledger.stages.push(stage(name, "failed", "The assembled provider prompt exceeds the configured context limit."));
+    return result(ledger, "failed", [], { reason: "context_limit" });
+  }
   try {
     const completion = await dependencies.route.complete({ profile, messages: [{ role: "user", content: prompt }] });
     addCompletion(ledger, name, completion);
@@ -188,6 +198,20 @@ const request = async (
 const isPipelineResult = (value: Readonly<{ text: string }> | StoryAgentPipelineResult): value is StoryAgentPipelineResult => "status" in value;
 
 export const createStoryAgentService = (dependencies: PipelineDependencies) => ({
+  analyze: async (input: IntelligenceInput): Promise<StoryAgentIntelligenceResult> => {
+    const ledger = emptyLedger(); const startedAt = dependencies.now();
+    let prompt: string;
+    try { prompt = intelligencePrompt(input, promptCharacterLimit(dependencies.budget) / 4); }
+    catch { return { status: "failed", reason: "context_limit" }; }
+    let correction = "";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const completion = await request("intelligence", "generate", prompt + correction, ledger, startedAt, dependencies);
+      if (isPipelineResult(completion)) return { status: "failed", reason: completion.reason ?? "provider_failed" };
+      try { return { status: "completed", findings: [...titleMatchFindings(input), ...validateIntelligence(extractJson(completion.text), input)] }; }
+      catch { correction = "\nThe previous review failed schema/reference/evidence validation. Return the specified findings JSON using only exact existing paths and quotes. Do not invent references."; }
+    }
+    return { status: "failed", reason: "invalid_intelligence_output" };
+  },
   run: async (input: StoryAgentPipelineInput): Promise<StoryAgentPipelineResult> => {
     const ledger = emptyLedger();
     const startedAt = dependencies.now();
@@ -201,8 +225,11 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
     }
     const gathered = withStoryStageSpan("story_agent.context.gather", () => gatherContext(accepted.requirement, input.existingItems ?? [], dependencies.budget.contextTokenLimit));
     ledger.stages.push(stage("gatherContext", "completed"));
+    let rulesContext: string;
+    try { rulesContext = projectRulesPrompt(input.projectRules); }
+    catch { return result(ledger, "failed", [], { reason: "invalid_project_rules" }); }
     const context = [accepted.context, gathered.text].filter(Boolean).join("\n");
-    const clarify = input.refinement ? { text: JSON.stringify({ needsClarification: false, questions: [], assumptions: [] }) } : await request("clarify", "fast", clarifyPrompt.build({ requirement: accepted.requirement, ...(context ? { context } : {}) }), ledger, startedAt, dependencies);
+    const clarify = input.refinement ? { text: JSON.stringify({ needsClarification: false, questions: [], assumptions: [] }) } : await request("clarify", "fast", rulesContext + clarifyPrompt.build({ requirement: accepted.requirement, ...(context ? { context } : {}) }), ledger, startedAt, dependencies);
     if (isPipelineResult(clarify)) return clarify;
     let clarifications: StoryAgentClarifications;
     try {
@@ -221,7 +248,7 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
       return result(ledger, "failed", [], { reason: "invalid_clarification_output" });
     }
 
-    let generated = await request("generate", "generate", (input.refinement ? refinementPrompt(input.refinement) : "") + generatePrompt.build({
+    let generated = await request("generate", "generate", rulesContext + (input.refinement ? refinementPrompt(input.refinement) : "") + generatePrompt.build({
       requirement: accepted.requirement,
       ...(context ? { context } : {}),
       clarifications,
@@ -257,7 +284,7 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
         if (errors.length === 0) {
           if (repair > 0) recordValidationEvent("repair_succeeded");
           const parsedPlan = planSchema.parse(plan);
-          return result(ledger, "draft", [], { plan: parsedPlan, stories: flattenPlan(parsedPlan), quality: explainQuality(parsedPlan, []), ...(explainedChanges ? { refinementChanges: explainedChanges } : {}) });
+          return result(ledger, "draft", [], { plan: parsedPlan, stories: flattenPlan(parsedPlan), quality: explainQuality(parsedPlan, [], input.projectRules), ...(explainedChanges ? { refinementChanges: explainedChanges } : {}) });
         }
       } else if (!input.refinement) {
         const stories = isObjectWithStories(candidate) ? candidate.stories : undefined;
@@ -265,14 +292,14 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => (
         if (errors.length === 0) {
           if (repair > 0) recordValidationEvent("repair_succeeded");
           const parsedStories = generatedStoriesSchema.parse(candidate).stories;
-          return result(ledger, "draft", [], { plan: legacyPlan(accepted.requirement, parsedStories), stories: parsedStories, quality: explainQuality(legacyPlan(accepted.requirement, parsedStories), []) });
+          return result(ledger, "draft", [], { plan: legacyPlan(accepted.requirement, parsedStories), stories: parsedStories, quality: explainQuality(legacyPlan(accepted.requirement, parsedStories), [], input.projectRules) });
         }
       }
       ledger.stages.push(stage("validate", "failed", errors.join("; ")));
       recordValidationEvent("failed");
       if (repair === 2) return result(ledger, "failed", errors, { reason: "validation_failed", quality: explainQuality(undefined, errors) });
       recordValidationEvent("repair_attempt");
-      generated = await request("repair", "generate", (input.refinement ? refinementPrompt(input.refinement) : "") + repairPrompt.build({
+      generated = await request("repair", "generate", rulesContext + (input.refinement ? refinementPrompt(input.refinement) : "") + repairPrompt.build({
         requirement: accepted.requirement,
         clarifications,
         previousOutput: generated.text.slice(0, maxRepairOutputCharacters),

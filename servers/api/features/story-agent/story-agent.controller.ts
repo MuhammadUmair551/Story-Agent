@@ -9,14 +9,16 @@ import type { StoryAgentPipelineResult, StoryAgentPipelineInput } from "./story-
 import { recordAdmission, withStorySpan, withStoryStageSpan } from "./story-agent.telemetry.js";
 import { refinementInputSchema, refinementDecisionSchema } from "./story-agent.validation.js";
 import { hasStoryContext, withStoryContext } from "./story-agent.metadata.js";
-import { activePlan, refinementChanges } from "./story-agent.refinement.js";
+import { activePlan, activeRequirement, refinementChanges } from "./story-agent.refinement.js";
+import { analysisIsCurrent } from "./story-agent.intelligence.js";
 import { explainQuality, planArtifacts } from "./story-agent.quality.js";
 import { flattenPlan, legacyPlan, validatePlan } from "./story-agent.service.js";
 import type { StoryAgentRefinement } from "@workspace/types";
+import type { StoryAgentProjectRepository } from "./story-agent.projects.repository.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult> }>;
-type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; capacity: StoryAgentCapacity; clock: Clock; createRunId?: () => string }>;
+type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; capacity: StoryAgentCapacity; clock: Clock; projects?: StoryAgentProjectRepository; createRunId?: () => string }>;
 type JsonResponse = Pick<Response, "json" | "status">;
 
 const toIso = (value: number): string => new Date(value).toISOString();
@@ -32,9 +34,9 @@ const queuedByCapacity = (): StoryAgentPipelineResult => ({
   reason: "capacity_queued"
 });
 
-type QueueWrite = Readonly<{ input: Readonly<{ requirement: string; context?: string | undefined }>; pipeline: StoryAgentPipelineResult; runId: string; now: number }>;
+type QueueWrite = Readonly<{ input: StoryAgentPipelineInput; pipeline: StoryAgentPipelineResult; runId: string; now: number }>;
 
-const runDocument = (runId: string, input: Readonly<{ requirement: string; context?: string | undefined }>, pipeline: StoryAgentPipelineResult, now: number): StoryAgentRunDocument => {
+const runDocument = (runId: string, input: StoryAgentPipelineInput, pipeline: StoryAgentPipelineResult, now: number): StoryAgentRunDocument => {
   const errorMessage = pipeline.status === "failed"
     ? pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed."
     : pipeline.reason;
@@ -43,6 +45,7 @@ const runDocument = (runId: string, input: Readonly<{ requirement: string; conte
     runId,
     status: pipeline.status,
     requirement: input.requirement,
+    ...(input.projectId ? { projectId: input.projectId, projectRules: input.projectRules } : {}),
     ...(input.context ? { context: input.context } : {}),
     ...(pipeline.questions ? { questions: pipeline.questions } : {}),
     ...(pipeline.stories ? { stories: pipeline.stories } : {}),
@@ -61,18 +64,19 @@ const runDocument = (runId: string, input: Readonly<{ requirement: string; conte
   };
 };
 
-const presentRun = (run: StoryAgentRunDocument): StoryAgentRunDocument => {
+const presentRun = (stored: StoryAgentRunDocument): StoryAgentRunDocument => {
+  const run = { ...stored, requirement: activeRequirement(stored) };
   let plan = activePlan(run) ?? (run.status === "draft" && run.stories?.length ? legacyPlan(run.requirement, run.stories) : undefined);
   if (!plan) return { ...run, quality: explainQuality(undefined, run.validationErrors) };
   if (run.refinements?.some((proposal) => proposal.status === "accepted")) {
     try { plan = withStoryContext(run.runId, plan, run.stories); }
     catch (error: unknown) { return { ...run, plan, error: error instanceof Error ? error.message : "Story context mapping is uncertain; the original stories are retained.", quality: explainQuality(plan, validatePlan(plan, [], 10)) }; }
-    return { ...run, plan, stories: flattenPlan(plan), quality: explainQuality(plan, validatePlan(plan, [], 10)) };
+    return { ...run, plan, stories: flattenPlan(plan), quality: explainQuality(plan, validatePlan(plan, [], 10), run.projectRules) };
   }
-  return { ...run, plan, quality: explainQuality(plan, validatePlan(plan, [], 10)) };
+  return { ...run, plan, quality: explainQuality(plan, validatePlan(plan, [], 10), run.projectRules) };
 };
 
-export const createStoryAgentController = ({ repository, service, capacity, clock, createRunId = randomUUID }:
+export const createStoryAgentController = ({ repository, service, capacity, clock, projects, createRunId = randomUUID }:
   ControllerDependencies) => {
   let queueWriteTail: Promise<void> = Promise.resolve();
   const saveQueuedRun = async ({ input, pipeline, runId, now }: QueueWrite): Promise<boolean> => {
@@ -111,16 +115,27 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       if ((run.refinementVersion ?? 0) !== input.version || run.refinements?.some((proposal) => proposal.status === "pending")) { response.status(HTTP_STATUS.conflict).json({ error: "The draft changed or has a pending proposal. Reload it before continuing." }); return; }
       if ((run.refinements?.length ?? 0) >= 20 || JSON.stringify(original).length > 24_000) { response.status(HTTP_STATUS.badRequest).json({ error: "This entry exceeds the refinement history or input size limit. Generate a smaller plan to continue." }); return; }
       if (!planArtifacts(original).some((artifact) => artifact.path === input.artifactPath)) { response.status(HTTP_STATUS.badRequest).json({ error: "The selected artifact does not exist." }); return; }
+      const analysis = input.analysisId ? run.analyses?.find((item) => item.id === input.analysisId) : undefined;
+      if (input.analysisId) {
+        const finding = analysis?.findings.find((item) => item.id === input.findingId && item.artifactPath === input.artifactPath);
+        const compared = await Promise.all((analysis?.compared ?? []).map(async (item) => await repository.getRun(item.runId)));
+        if (!analysis || !finding || compared.some((item) => !item) || !analysisIsCurrent(analysis, run, compared.filter((item): item is StoryAgentRunDocument => item !== null))) { response.status(HTTP_STATUS.conflict).json({ error: "This analysis is stale or the selected finding does not match. Analyze the saved entry again." }); return; }
+      }
+      const requirement = analysis?.updatedRequirement ?? activeRequirement(run);
       const admission = capacity.acquire(request.socket.remoteAddress ?? "unknown");
       if (admission.kind !== "accepted") { response.status(admission.kind === "rate_limited" ? HTTP_STATUS.tooManyRequests : HTTP_STATUS.serviceUnavailable).json({ error: "Refinement capacity is unavailable. Try again shortly." }); return; }
       let pipeline: StoryAgentPipelineResult;
-      try { pipeline = await service.run({ requirement: run.requirement, ...(run.context ? { context: run.context } : {}), refinement: { original, artifactPath: input.artifactPath, instructions: input.instructions } }); }
+      try { pipeline = await service.run({ requirement, ...(run.context ? { context: run.context } : {}), projectRules: run.projectRules, refinement: { original, artifactPath: input.artifactPath, instructions: input.instructions } }); }
       finally { admission.release(); }
       if (pipeline.status !== "draft" || !pipeline.plan) { response.status(HTTP_STATUS.serviceUnavailable).json({ error: "No valid refinement proposal was produced. The original is unchanged.", reason: pipeline.reason }); return; }
       const changes = pipeline.refinementChanges ?? refinementChanges(original, pipeline.plan, input.artifactPath);
       if (!changes.length) { response.status(HTTP_STATUS.unprocessableEntity).json({ error: "The provider proposed no changes to the selected artifact." }); return; }
+      if (analysis) {
+        const compared = await Promise.all(analysis.compared.map(async (item) => await repository.getRun(item.runId)));
+        if (compared.some((item) => !item) || !analysisIsCurrent(analysis, run, compared.filter((item): item is StoryAgentRunDocument => item !== null))) { response.status(HTTP_STATUS.conflict).json({ error: "A compared entry changed while preparing the proposal. Analyze again." }); return; }
+      }
       const now = toIso(clock.now());
-      const proposal: StoryAgentRefinement = { id: randomUUID(), artifactPath: input.artifactPath, status: "pending", original, proposed: pipeline.plan, changes, quality: pipeline.quality ?? explainQuality(pipeline.plan, []), createdAt: now };
+      const proposal: StoryAgentRefinement = { id: randomUUID(), artifactPath: input.artifactPath, status: "pending", original, proposed: pipeline.plan, changes, quality: pipeline.quality ?? explainQuality(pipeline.plan, [], run.projectRules), createdAt: now, ...(analysis ? { analysisId: analysis.id } : {}), ...(analysis?.updatedRequirement ? { requirementChange: { original: activeRequirement(run), proposed: requirement } } : {}) };
       if (!await repository.saveRefinements(run.runId, input.version, [...(run.refinements ?? []), proposal], now)) { response.status(HTTP_STATUS.conflict).json({ error: "The draft changed during refinement. Reload it and try again." }); return; }
       response.status(HTTP_STATUS.ok).json({ proposal, version: input.version + 1 });
     } catch (error: unknown) { next(error); }
@@ -135,6 +150,11 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       if (!proposal) { response.status(HTTP_STATUS.notFound).json({ error: "Refinement proposal not found." }); return; }
       if (run.deletingAt || proposal.status !== "pending" || (run.refinementVersion ?? 0) !== input.version) { response.status(HTTP_STATUS.conflict).json({ error: "The proposal changed or has already been decided. Reload this entry." }); return; }
       if (input.decision === "accept" && (!hasStoryContext(proposal.original) || !hasStoryContext(proposal.proposed))) { response.status(HTTP_STATUS.conflict).json({ error: "This proposal predates stable story context mapping. Reject it and request a new proposal; original content is retained." }); return; }
+      if (input.decision === "accept" && proposal.analysisId) {
+        const analysis = run.analyses?.find((item) => item.id === proposal.analysisId);
+        const compared = await Promise.all((analysis?.compared ?? []).map(async (item) => await repository.getRun(item.runId)));
+        if (!analysis || compared.some((item) => !item) || !analysisIsCurrent(analysis, run, compared.filter((item): item is StoryAgentRunDocument => item !== null), "decision")) { response.status(HTTP_STATUS.conflict).json({ error: "The analysis is stale. Reject this proposal and analyze again before accepting an update." }); return; }
+      }
       const now = toIso(clock.now());
       const refinements = (run.refinements ?? []).map((item) => item.id === proposal.id ? { ...item, status: input.decision === "accept" ? "accepted" as const : "rejected" as const, decidedAt: now } : item);
       if (!await repository.saveRefinements(run.runId, input.version, refinements, now)) { response.status(HTTP_STATUS.conflict).json({ error: "The entry changed. Reload it before deciding again." }); return; }
@@ -143,7 +163,10 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
   },
   createRun: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
     try {
-      const input = requirementInputSchema.parse(request.body);
+      const parsed = requirementInputSchema.parse(request.body);
+      const project = parsed.projectId ? await projects?.get(parsed.projectId) : undefined;
+      if (parsed.projectId && !project) { response.status(HTTP_STATUS.notFound).json({ error: "Project not found. Select an available project." }); return; }
+      const input: StoryAgentPipelineInput = { ...parsed, ...(project ? { projectRules: project.rules } : {}) };
       if (await repository.countQueuedRuns() >= 20) {
         recordAdmission("queue_full");
         response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Story Agent queue is full. Please try again shortly." });
@@ -197,7 +220,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       const runs = await repository.listRuns({ limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20, skip: Number.isInteger(skip) && skip >= 0 ? skip : 0 });
       response.status(HTTP_STATUS.ok).json({ runs: runs.map((run) => {
         const presented = run.refinements?.some((proposal) => proposal.status === "accepted") ? presentRun(run) : run;
-        return { ...presented, refinements: undefined };
+        return { ...presented, refinements: undefined, analyses: undefined };
       }) });
     } catch (error: unknown) {
       next(error);

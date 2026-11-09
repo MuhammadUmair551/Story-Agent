@@ -1,4 +1,7 @@
 import { z } from "zod";
+import type { StoryAgentProject, StoryAgentProjectInput } from "@workspace/types";
+import { projectSchema } from "./story-agent.projects";
+import { analysisSchema } from "./story-agent.intelligence";
 import type {
   StoryAgentRun,
   StoryAgentRunDetail,
@@ -52,6 +55,7 @@ export const buildStoryAgentRunCopyText = (run: StoryAgentRun): string => {
 type Fetch = typeof fetch;
 
 type CreateRunInput = {
+  projectId?: string | undefined;
   requirement: string;
 };
 
@@ -137,7 +141,7 @@ const refinementSchema = z.object({
   original: z.unknown().transform((value, ctx) => { const plan = asPlan(value); if (plan) return plan; ctx.addIssue({ code: "custom", message: "Invalid original plan." }); return z.NEVER; }),
   proposed: z.unknown().transform((value, ctx) => { const plan = asPlan(value); if (plan) return plan; ctx.addIssue({ code: "custom", message: "Invalid proposed plan." }); return z.NEVER; }),
   changes: z.array(z.object({ path: z.string(), explanation: z.string(), reason: z.string() })),
-  quality: qualitySchema, createdAt: z.string(), decidedAt: z.string().optional()
+  quality: qualitySchema, createdAt: z.string(), decidedAt: z.string().optional(), analysisId: z.string().optional(), requirementChange: z.object({ original: z.string(), proposed: z.string() }).optional()
 }) satisfies z.ZodType<StoryAgentRefinement>;
 
 export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
@@ -153,12 +157,15 @@ export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
     runId: typeof record.runId === "string" ? record.runId : "",
     status: invalidDraft ? "failed" : status,
     requirement: typeof record.requirement === "string" ? record.requirement : "",
+    projectId: typeof record.projectId === "string" ? record.projectId : undefined,
+    deletingAt: typeof record.deletingAt === "string" ? record.deletingAt : undefined,
     questions: asStrings(record.questions),
     stories,
     plan,
     quality: quality.success ? quality.data : undefined,
     refinements: refinements.success ? refinements.data : undefined,
     refinementVersion: typeof record.refinementVersion === "number" ? record.refinementVersion : 0,
+    analyses: z.array(analysisSchema).optional().parse(record.analyses),
     usage: asUsage(record.usage),
     error: invalidDraft ? "Saved draft data is incomplete." : typeof record.error === "string" ? record.error : undefined,
     reason: typeof record.reason === "string" ? record.reason : undefined,
@@ -171,6 +178,14 @@ const readJson = async (response: Response): Promise<unknown> => response.json()
 
 const getErrorMessage = (payload: unknown): string => {
   const record = asRecord(payload);
+  const nested = asRecord(record.error);
+  if (typeof nested.message === "string") {
+    const issues = Array.isArray(nested.details) ? nested.details.slice(0, 3).map((value: unknown) => {
+      const issue = asRecord(value); const path = Array.isArray(issue.path) ? issue.path.filter((part: unknown) => typeof part === "string" || typeof part === "number").join(".") : "";
+      return typeof issue.message === "string" ? `${path ? `${path}: ` : ""}${issue.message}` : "";
+    }).filter(Boolean) : [];
+    return `${nested.message}${issues.length ? ` ${issues.join("; ")}` : ""}`;
+  }
   return typeof record.message === "string"
     ? record.message
     : typeof record.error === "string"
@@ -198,10 +213,18 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = fetch) 
   const endpoint = `${baseUrl.replace(/\/$/, "")}/story-agent/runs`;
 
   return {
+    listProjects: async (): Promise<readonly StoryAgentProject[]> => z.object({ projects: z.array(projectSchema) }).parse(await request(fetcher, `${baseUrl.replace(/\/$/, "")}/story-agent/projects`)).projects,
+    saveProject: async (input: StoryAgentProjectInput, current?: StoryAgentProject): Promise<StoryAgentProject> => {
+      const url = `${baseUrl.replace(/\/$/, "")}/story-agent/projects${current ? `/${encodeURIComponent(current.projectId)}` : ""}`;
+      return z.object({ project: projectSchema }).parse(await request(fetcher, url, { method: current ? "PUT" : "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...input, ...(current ? { version: current.version } : {}) }) })).project;
+    },
     deleteRun: async (runId: string): Promise<void> => {
       await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}`, { method: "DELETE" });
     },
-    proposeRefinement: async (runId: string, input: Readonly<{ artifactPath: string; instructions: string; version: number }>): Promise<void> => {
+    analyzeRun: async (runId: string, input: Readonly<{ kind: "backlog" | "impact"; version: number; updatedRequirement?: string | undefined; compareRunIds?: readonly string[] | undefined }>): Promise<void> => {
+      await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}/analyses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
+    },
+    proposeRefinement: async (runId: string, input: Readonly<{ artifactPath: string; instructions: string; version: number; analysisId?: string | undefined; findingId?: string | undefined }>): Promise<void> => {
       await request(fetcher, `${endpoint}/${encodeURIComponent(runId)}/refinements`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
     },
     decideRefinement: async (runId: string, proposalId: string, decision: "accept" | "reject", version: number): Promise<void> => {
@@ -228,8 +251,8 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = fetch) 
         message: typeof payload.message === "string" ? payload.message : undefined
       };
     },
-    listRuns: async (): Promise<StoryAgentRun[]> => {
-      const payload = asRecord(await request(fetcher, `${endpoint}?limit=20&skip=0`));
+    listRuns: async (input: Readonly<{ limit?: number; skip?: number }> = {}): Promise<StoryAgentRun[]> => {
+      const payload = asRecord(await request(fetcher, `${endpoint}?limit=${String(input.limit ?? 20)}&skip=${String(input.skip ?? 0)}`));
       const runs = Array.isArray(payload.runs) ? payload.runs : [];
       return runs.map(parseStoryAgentRun);
     },

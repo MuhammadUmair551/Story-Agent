@@ -1,4 +1,5 @@
 import type { StoryAgentPlan, StoryAgentQualityReport, StoryAgentRefinement } from "@workspace/types";
+import type { StoryAgentAnalysis } from "@workspace/types";
 export type { StoryAgentPlan, StoryAgentTask, StoryAgentPlannedStory, StoryAgentFeature, StoryAgentEpic, StoryAgentQualityReport, StoryAgentRefinement, StoryAgentStoryMetadata } from "@workspace/types";
 export type StoryAgentStatus = "questions" | "draft" | "failed" | "queued";
 
@@ -25,12 +26,15 @@ export type StoryAgentRun = {
   runId: string;
   status: StoryAgentStatus;
   requirement: string;
+  projectId?: string | undefined;
+  deletingAt?: string | undefined;
   questions?: string[] | undefined;
   stories?: StoryAgentStory[] | undefined;
   plan?: StoryAgentPlan | undefined;
   quality?: StoryAgentQualityReport | undefined;
   refinements?: readonly StoryAgentRefinement[] | undefined;
   refinementVersion?: number | undefined;
+  analyses?: readonly StoryAgentAnalysis[] | undefined;
   usage?: StoryAgentUsage | undefined;
   error?: string | undefined;
   reason?: string | undefined;

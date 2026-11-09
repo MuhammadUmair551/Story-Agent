@@ -1,11 +1,16 @@
 import type { StoryAgentPlan, StoryAgentRunStatus, StoryAgentStory, StoryAgentUsage, StoryAgentQualityReport, StoryAgentRefinement } from "@workspace/types";
 import type { MongoPersistence } from "../../integrations/index.js";
 import type { StoryAgentStageOutcome } from "./story-agent.service.js";
+import type { StoryAgentProjectRules } from "@workspace/types";
+import type { StoryAgentAnalysis } from "@workspace/types";
 
 export type StoryAgentRunDocument = Readonly<Record<string, unknown>> & Readonly<{
   runId: string;
   status: StoryAgentRunStatus;
   requirement: string;
+  projectId?: string | undefined;
+  projectRules?: StoryAgentProjectRules | undefined;
+  analyses?: readonly StoryAgentAnalysis[] | undefined;
   context?: string | undefined;
   questions?: readonly string[] | undefined;
   stories?: readonly StoryAgentStory[] | undefined;

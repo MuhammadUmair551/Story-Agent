@@ -7,11 +7,13 @@ import { createStoryAgentService } from "./story-agent.service.js";
 import { createStoryAgentQueue } from "./story-agent.queue.js";
 import { createStoryAgentCapacity } from "./story-agent.capacity.js";
 import { withStorySpan, recordGeneration } from "./story-agent.telemetry.js";
+import { createProjectRepository } from "./story-agent.projects.repository.js";
+import { createIntelligenceRepository } from "./story-agent.intelligence.repository.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type FeatureDependencies = Readonly<{ db: MongoPersistence; llm: LlmGateway; logger: Logger; clock: Clock; queueIntervalMs: number; maxConcurrentRuns: number; maxRequestsPerWindow: number; requestWindowMs: number; maxTrackedClients: number }>;
 
-const budget = Object.freeze({ maxCalls: 6, maxTotalTokens: 12_000, timeoutMs: 60_000, contextTokenLimit: 6_000, maxStories: 10 });
+const budget = Object.freeze({ maxCalls: 6, maxTotalTokens: 12_000, timeoutMs: 60_000, contextTokenLimit: 6_000, maxPromptCharacters: 24_000, maxStories: 10 });
 
 export const createStoryAgentFeature = ({ db, llm, logger, clock, queueIntervalMs, maxConcurrentRuns, maxRequestsPerWindow, requestWindowMs, maxTrackedClients }: FeatureDependencies) => {
   const router = createStoryAgentProviderRouter({
@@ -21,7 +23,9 @@ export const createStoryAgentFeature = ({ db, llm, logger, clock, queueIntervalM
     clock
   });
   const pipeline = createStoryAgentService({ route: router, now: clock.now, budget });
-  const service = Object.freeze({ run: async (input: Parameters<typeof pipeline.run>[0]) => {
+  const service = Object.freeze({ analyze: async (input: Parameters<typeof pipeline.analyze>[0]) => await withStorySpan("story_agent.intelligence", {}, async (span) => {
+    const result = await pipeline.analyze(input); span.setAttribute("story_agent.outcome", result.status); return result;
+  }, (result) => result.status), run: async (input: Parameters<typeof pipeline.run>[0]) => {
     const startedAt = clock.now();
     return await withStorySpan("story_agent.generation", {}, async (span) => {
       const result = await pipeline.run(input);
@@ -33,11 +37,13 @@ export const createStoryAgentFeature = ({ db, llm, logger, clock, queueIntervalM
     }, (result) => result.status);
   } });
   const repository = createStoryAgentRepository(db);
+  const projects = createProjectRepository(db);
+  const reviews = createIntelligenceRepository(db);
   const capacity = createStoryAgentCapacity({ maxConcurrentRuns, maxRequestsPerWindow, requestWindowMs, maxTrackedClients, clock });
   const queue = createStoryAgentQueue({ repository, service, logger, clock, intervalMs: queueIntervalMs, capacity });
   return Object.freeze({
-    routeDependencies: { db, logger, clock, repository, service, capacity },
-    ensureIndexes: repository.ensureIndexes,
+    routeDependencies: { db, logger, clock, repository, projects, reviews, service, capacity },
+    ensureIndexes: async (): Promise<void> => { await repository.ensureIndexes(); await projects.ensureIndexes(); },
     queue
   });
 };

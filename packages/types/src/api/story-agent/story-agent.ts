@@ -2,6 +2,7 @@ export type StoryAgentRunStatus = "questions" | "draft" | "failed" | "queued";
 
 export type StoryAgentRequirementInput = Readonly<{
   requirement: string;
+  projectId?: string | undefined;
   context?: string | undefined;
 }>;
 
@@ -98,6 +99,8 @@ export type StoryAgentRefinement = Readonly<{
   quality: StoryAgentQualityReport;
   createdAt: string;
   decidedAt?: string | undefined;
+  analysisId?: string | undefined;
+  requirementChange?: Readonly<{ original: string; proposed: string }> | undefined;
 }>;
 
 export type StoryAgentRunResponse = Readonly<{

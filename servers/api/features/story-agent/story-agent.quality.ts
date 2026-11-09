@@ -1,4 +1,5 @@
 import type { StoryAgentArtifactLevel, StoryAgentPlan, StoryAgentQualityCheck, StoryAgentQualityReport } from "@workspace/types";
+import type { StoryAgentProjectRules } from "@workspace/types";
 
 export type StoryAgentArtifact = Readonly<{ path: string; level: StoryAgentArtifactLevel; title: string; text: string; criteria?: readonly string[] }>;
 
@@ -24,7 +25,7 @@ const normalize = (text: string): string => text.toLowerCase().replace(/[^a-z0-9
 
 // Blocking status comes exclusively from the existing generation validators.
 // Heuristics below are advisory and must not claim semantic verification.
-export const explainQuality = (plan: StoryAgentPlan | undefined, validationErrors: readonly string[]): StoryAgentQualityReport => {
+export const explainQuality = (plan: StoryAgentPlan | undefined, validationErrors: readonly string[], projectRules?: StoryAgentProjectRules): StoryAgentQualityReport => {
   const checks: StoryAgentQualityCheck[] = validationErrors.map((error) => ({
     artifactPath: "initiative", level: "initiative", dimension: /Duplicate/.test(error) ? "duplicate_behavior" : /At most/.test(error) ? "scope" : "completeness",
     status: "failed", issue: error, reason: "The existing output validator rejected this output.",
@@ -37,6 +38,10 @@ export const explainQuality = (plan: StoryAgentPlan | undefined, validationError
       checks.push({ artifactPath: artifact.path, level: artifact.level, dimension, status, issue, reason, impact, suggestedFix });
     };
     add("completeness", "passed", "Required artifact fields are present.", `The ${artifact.level} satisfies its own hierarchy schema.`, "Consumers can read its required fields and relationships.", "Keep these fields when refining the artifact.");
+    const naming = projectRules?.naming.find((rule) => rule.level === artifact.level);
+    if (naming) add("ambiguity", naming.prefix && !artifact.title.startsWith(naming.prefix) ? "warning" : "needs_review", "Review project naming convention.", `Expected prefix: ${naming.prefix || "none"}. ${naming.instructions}`, "Inconsistent names make the project hierarchy harder to navigate.", "Apply the configured naming convention without changing the artifact's meaning.");
+    for (const rule of projectRules?.rules.filter((rule) => rule.enabled && (rule.level === "all" || rule.level === artifact.level)) ?? []) add("completeness", "needs_review", `Project rule (${rule.group})`, rule.instruction, "A project convention may be unmet; semantic compliance needs review.", "Compare the artifact with this rule and request an explicit refinement when needed.");
+    if (artifact.level === "story" && projectRules) add("testability", projectRules.acceptanceCriteria.format === "given_when_then" && !artifact.criteria?.every((criterion) => /given.+when.+then/is.test(criterion)) ? "warning" : "needs_review", "Review project acceptance criteria format.", `${projectRules.acceptanceCriteria.format}: ${projectRules.acceptanceCriteria.instructions}`, "Criteria may differ from the project's approved review format.", "Use the project format and approved examples while retaining the story's actual requirements.");
     const vague = /\b(etc|somehow|appropriate|user.friendly|as needed|fast|seamless|various|TBD)\b/i.test(`${artifact.title} ${artifact.text} ${artifact.criteria?.join(" ") ?? ""}`);
     add("ambiguity", vague ? "warning" : "needs_review", vague ? "Unbounded or vague wording needs clarification." : "Review wording for shared understanding.", vague ? "The text includes wording without an observable definition." : "A wording scan cannot establish that stakeholders interpret the text identically.", "Different interpretations can lead to inconsistent delivery.", artifact.level === "task" ? "Name the implementation result and how to verify it; replace vague terms with explicit conditions." : "Replace subjective terms with observable outcomes or agreed thresholds without inventing requirements.");
     add("scope", "needs_review", `Review the ${artifact.level}'s scope.`, artifact.level === "story" ? "Each story should serve one actor and one outcome." : artifact.level === "task" ? "A task should describe one implementable piece of its parent story." : "This planning level groups outcomes and may legitimately contain multiple children.", "Unclear boundaries make estimation and delivery harder.", artifact.level === "story" ? "Split distinct actor outcomes into independent stories." : artifact.level === "task" ? "Limit the task to one verifiable implementation result." : "Clarify the boundary and move unrelated child outcomes to a separate group.");
