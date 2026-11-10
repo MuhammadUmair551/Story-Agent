@@ -4,14 +4,10 @@ export const emailSchema = z.string().trim().max(254).transform((value) => value
 export const passwordSchema = z.string().transform((value) => value.normalize("NFC")).pipe(z.string().min(15, "Use at least 15 characters.").max(128).refine((value) => !["passwordpassword", "123456789012345", "qwertyuiopasdfgh", "letmeinletmeinletmein"].includes(value.toLowerCase()), "Choose a less predictable password."));
 export const signupSchema = z.object({ email: emailSchema, password: passwordSchema, displayName: z.string().trim().min(1).max(80) }).strict();
 export const loginSchema = z.object({ email: emailSchema, password: z.string().transform((value) => value.normalize("NFC")).pipe(z.string().min(1).max(128)) }).strict();
-export const emailInputSchema = z.object({ email: emailSchema }).strict();
-export const tokenInputSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict();
-export const resetInputSchema = tokenInputSchema.extend({ password: passwordSchema }).strict();
+export const changePasswordSchema = z.object({ currentPassword: loginSchema.shape.password, newPassword: passwordSchema }).strict();
 export const profileInputSchema = z.object({ displayName: z.string().trim().min(1).max(80) }).strict();
 export const readAuthConfiguration = (environment: ValidatedApiEnvironment) => {
-  const parsed = z.object({ publicOrigin: z.url(), mailKey: z.string().refine((key) => /^[A-Za-z0-9+/]{43}=$/.test(key) && Buffer.from(key, "base64").length === 32), from: z.email(), apiKey: z.string().min(16) }).parse({
-    publicOrigin: environment.AUTH_PUBLIC_ORIGIN, mailKey: environment.AUTH_MAIL_ENCRYPTION_KEY, from: environment.AUTH_EMAIL_FROM, apiKey: environment.AUTH_EMAIL_API_KEY
-  });
+  const parsed = z.object({ publicOrigin: z.url() }).parse({ publicOrigin: environment.AUTH_PUBLIC_ORIGIN });
   const url = new URL(parsed.publicOrigin);
   if (url.origin !== parsed.publicOrigin || !environment.WEB_ORIGIN.split(",").includes(url.origin) || (url.protocol !== "https:" && !(environment.NODE_ENV !== "production" && url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname)))) throw new Error("Authentication public origin must be an allowed secure web origin.");
   return { ...parsed, secure: environment.NODE_ENV === "production" };

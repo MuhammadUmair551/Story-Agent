@@ -48,16 +48,12 @@ const input = async (selector, value) => {
 const fill = async (label, value) => await input(`[...document.querySelectorAll('label')].find(el => el.firstChild?.textContent.trim() === ${JSON.stringify(label)})?.querySelector('input,textarea')`, value);
 const check = (condition, message) => { assertions++; assert.ok(condition, message); };
 const state = async () => await (await fetch(`${control}/test/state`)).json();
-const mail = async (email) => (await (await fetch(`${control}/test/mail?email=${encodeURIComponent(email)}`)).json()).token;
 const api = async (path, method = "GET", body) => await evaluate(`(async () => { const session = await (await fetch('/api/auth/session')).json(); const response = await fetch(${JSON.stringify(`/api${path}`)}, {method:${JSON.stringify(method)},headers:{'Content-Type':'application/json','X-CSRF-Token':session.csrfToken},${body === undefined ? "" : `body:JSON.stringify(${JSON.stringify(body)}),`}});return {status:response.status,data:await response.json()}; })()`);
 const password = "A browser journey unique password!";
 const signup = async (email, name) => {
   await navigate("/signup"); await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Display name", name); await fill("Email", email); await fill("Password", password); await click("Create account");
-  await waitFor("document.querySelector('[role=status]')?.textContent.includes('eligible')"); check(true, "Signup uses a generic email confirmation");
-  const token = await mail(email); check(typeof token === "string", "Verification delivered through the encrypted outbox");
-  await navigate(`/verify-email#token=${token}`, "/verify-email"); await click("Verify email");
-  await waitFor("document.querySelector('[role=status]')?.textContent.includes('Email verified')");
-  check(await evaluate("!location.hash"), "Verification token removed from URL");
+  await waitFor("document.querySelector('[role=status]')?.textContent.includes('Signup processed')"); check(true, "Signup gives an honest generic response without email delivery");
+  check(await evaluate("![...document.querySelectorAll('.auth-card a')].some(el => /verify-email|forgot-password|reset-password/.test(el.pathname))"), "No removed recovery or verification links");
 };
 const login = async (email, secret = password) => { await navigate("/login"); await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Email", email); await fill("Password", secret); await click("Sign in"); };
 
@@ -74,6 +70,7 @@ try {
   check(await evaluate("!document.cookie.includes('story_session') && localStorage.length === 0 && sessionStorage.length === 0"), "Session is HttpOnly and absent from browser token storage");
   const cookies = (await send("Network.getCookies", { urls: [web.origin] })).cookies;
   check(cookies.some(cookie => cookie.name === "story_session" && cookie.httpOnly && cookie.sameSite === "Lax"), "Actual browser session cookie attributes verified");
+  check(await evaluate("(async () => (await fetch('/api/auth/profile', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({displayName:'Forged'})})).status === 403)()"), "Browser write without a CSRF token is rejected");
   await evaluate("document.querySelector('.forge-project summary').click()"); await fill("Project name", "Alice private project"); await click("Create project");
   await waitFor("[...document.querySelectorAll('button')].some(el => el.textContent.trim() === 'Save rules')");
   await click("Add glossary term"); await fill("Term", "Reader"); await fill("Definition", "A person resuming a chapter"); await fill("Aliases (comma separated)", "Bookworm"); await click("Save rules");
@@ -103,15 +100,20 @@ try {
   check((await api(`/story-agent/runs/${run.runId}`)).status === 404, "Cross-user IDOR read rejected");
   check((await api(`/story-agent/runs/${run.runId}`, "DELETE")).status === 404, "Cross-user IDOR deletion rejected");
   check((await api("/auth/profile", "PATCH", { displayName: "Bob", role: "admin" })).status === 400, "Frontend role escalation rejected");
-  await click("Sign out"); await waitFor("location.pathname === '/login'"); await navigate("/forgot-password");
-  await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Email", "alice@example.test"); await click("Send reset email"); await waitFor("document.querySelector('[role=status]')?.textContent.includes('eligible')");
-  const reset = await mail("alice@example.test"); await navigate(`/reset-password#token=${reset}`, "/reset-password");
-  const replacement = "Another browser journey unique password!"; await fill("Password", replacement); await click("Save new password");
-  await waitFor("document.querySelector('[role=status]')?.textContent.includes('Password reset')");
-  check((await api("/auth/reset-password", "POST", { token: reset, password: replacement })).status === 400, "Reset token replay rejected in browser");
-  await login("alice@example.test"); await waitFor("document.querySelector('[role=alert]')?.textContent.includes('invalid')"); check(true, "Old password rejected after reset");
+  await click("Sign out"); await waitFor("location.pathname === '/login'");
+  await login("alice@example.test"); await waitFor("location.pathname === '/' && document.querySelector('.story-forge')");
+  await navigate("/account");
+  await fill("Current password", "Incorrect sufficiently long current password!");
+  const replacement = "Another browser journey unique password!"; await fill("New password", replacement); await click("Change password");
+  await waitFor("document.querySelector('[role=alert]')?.textContent.includes('Current password is invalid')");
+  check((await api("/story-agent/runs")).status === 200, "Wrong current password leaves the session and account intact");
+  await fill("Current password", password); await click("Change password"); await waitFor("location.pathname === '/login'");
+  check((await api("/story-agent/runs")).status === 401, "Password change signs out the current session");
+  for (const path of ["verify-email", "resend-verification", "forgot-password", "reset-password"]) check((await api("/auth/" + path, "POST", {})).status === 404, "Removed email API returns 404: " + path);
+  for (const path of ["verify-email", "forgot-password", "reset-password"]) check(await evaluate("(async()=> (await fetch('/" + path + "')).status === 404)()"), "Removed email screen returns 404: " + path);
+  await login("alice@example.test"); await waitFor("document.querySelector('[role=alert]')?.textContent.includes('invalid')"); check(true, "Old password rejected after change");
   await fill("Password", replacement); await click("Sign in"); await waitFor("location.pathname === '/' && document.querySelector('.story-forge')");
-  check((await api("/story-agent/runs")).data.runs.length === 1, "Account history survives password reset");
+  check((await api("/story-agent/runs")).data.runs.length === 1, "Account history survives password change");
   await evaluate("[...document.querySelectorAll('.forge-nav__content button')].find(el => el.textContent.includes('Story vault')).click()");
   await waitFor("document.querySelector('.forge-history-entry__delete')");
   await evaluate("document.querySelector('.forge-history-entry__delete').click()"); await waitFor("document.querySelector('[role=alertdialog]')");
@@ -124,14 +126,14 @@ try {
   for (const width of [1440, 390]) {
     await navigate("/account"); await send("Emulation.setDeviceMetricsOverride", { width, height: 1100, deviceScaleFactor: 1, mobile: width < 700 });
     check(!(await evaluate("document.documentElement.scrollWidth > innerWidth")), `Account layout fits ${width}px`);
-    await writeFile(`.repo-cache/phase5-account-${width}.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+    await writeFile(`.repo-cache/phase5-no-mail-account-${width}.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
   }
   await click("Sign out all sessions"); await waitFor("location.pathname === '/login'");
   check((await api("/story-agent/runs")).status === 401, "Sign out all sessions invalidates browser access");
   check(exceptions.length === 0, "No browser JavaScript exceptions");
-  console.log(`PASS: ${assertions} browser assertions covering signup, verification, login, reset, logout, cookies, ownership, projects, generation, review, impact, refinement and responsive layouts.`);
+  console.log(`PASS: ${assertions} browser assertions covering immediate signup, login, password change, removed email routes, logout, cookies, ownership, projects, generation, review, impact, refinement and responsive layouts.`);
 } catch (error) {
-  await writeFile(".repo-cache/phase5-browser-failure.json", JSON.stringify({ pathname: await evaluate("location.pathname"), text: await evaluate("document.body.innerText"), exceptions, requests }, null, 2));
-  await writeFile(".repo-cache/phase5-browser-failure.png", Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await writeFile(".repo-cache/phase5-no-mail-browser-failure.json", JSON.stringify({ pathname: await evaluate("location.pathname"), text: await evaluate("document.body.innerText"), exceptions, requests }, null, 2));
+  await writeFile(".repo-cache/phase5-no-mail-browser-failure.png", Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
   throw error;
 } finally { await send("Page.close").catch(() => undefined); socket.close(); }

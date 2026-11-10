@@ -9,9 +9,6 @@ export type ValidatedApiEnvironment = Readonly<{
   API_PORT: number;
   WEB_ORIGIN: string;
   AUTH_PUBLIC_ORIGIN?: string | undefined;
-  AUTH_MAIL_ENCRYPTION_KEY?: string | undefined;
-  AUTH_EMAIL_FROM?: string | undefined;
-  AUTH_EMAIL_API_KEY?: string | undefined;
   MONGODB_URI?: string | undefined;
   LOG_LEVEL: LogLevel;
   LLM_PROVIDERS?: string | undefined;

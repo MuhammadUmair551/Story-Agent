@@ -1,6 +1,5 @@
-import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import type { AuthEmail, MongoPersistence, MongoDocument, MongoCollection } from "../../../integrations/index.js";
+import type { MongoPersistence, MongoDocument, MongoCollection } from "../../../integrations/index.js";
 import { createApp } from "../../../bootstrap/index.js";
 import { createApiConfig, readApiEnvironment } from "../../../config/index.js";
 import { createAuthFeature } from "../index.js";
@@ -12,11 +11,11 @@ import { z } from "zod";
 export const plan: StoryAgentPlan = { initiative: { title: "Reader continuity", outcome: "Readers resume chapters", epics: [{ title: "Reading", objective: "Resume progress", features: [{ title: "Chapter resume", outcome: "Continue reading", stories: [{ title: "A reader resumes a chapter", intent: "Continue reading", acceptanceCriteria: ["Given saved progress, when reading resumes, then the chapter opens at the saved position."], tasks: [{ title: "Restore position", description: "Read the stored offset and restore the chapter.", effort: "S" }] }] }] }] } };
 
 export const authFixture = async (secure = false, origins = ["http://localhost:3000"], port = 0, delayQueueReads = false) => {
-  const memory = createMemoryPersistence(); const messages: AuthEmail[] = []; let time = Date.now(); let mailUnavailable = false;
+  const memory = createMemoryPersistence(); let time = Date.now();
   const now = () => time; const logger = { info: () => undefined, warn: () => undefined, error: () => undefined };
   const config = createApiConfig(readApiEnvironment({ NODE_ENV: "test", API_HOST: "127.0.0.1", API_PORT: "4000", WEB_ORIGIN: origins.join(","), LOG_LEVEL: "silent" }));
-  const authConfig = { secure, publicOrigin: origins[0] ?? "http://localhost:3000", from: "mail@example.test", apiKey: "fixture-only", mailKey: randomBytes(32).toString("base64") };
-  const auth = await createAuthFeature({ db: memory.db, config: authConfig, origins, now, logger, sendEmail: (message) => { if (mailUnavailable) return Promise.reject(new Error("Unavailable")); messages.push(message); return Promise.resolve(); } });
+  const authConfig = { secure, publicOrigin: origins[0] ?? "http://localhost:3000" };
+  const auth = await createAuthFeature({ db: memory.db, config: authConfig, origins, now });
   const storyDb: MongoPersistence = { getCollection: <T extends MongoDocument>(name: string): MongoCollection<T> => {
     const collection = memory.db.getCollection<T>(name);
     const countDocuments: MongoCollection<T>["countDocuments"] = async (filter) => {
@@ -48,9 +47,9 @@ export const authFixture = async (secure = false, origins = ["http://localhost:3
   const server = createServer(app); await new Promise<void>((resolve) => { server.listen(port, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing test server address");
   const base = `http://127.0.0.1:${String(address.port)}`;
-  return { app, auth, authConfig, feature, memory, messages, scope, repository, authRepository: createAuthRepository(memory.db), base, now,
-    advance: (milliseconds: number) => { time += milliseconds; }, mailFailure: (value: boolean) => { mailUnavailable = value; },
-    close: async () => { auth.stop(); server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => { if (error) reject(error); else resolve(); })); }
+  return { app, auth, authConfig, feature, memory, scope, repository, authRepository: createAuthRepository(memory.db), base, now,
+    advance: (milliseconds: number) => { time += milliseconds; },
+    close: async () => { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => { if (error) reject(error); else resolve(); })); }
   };
 };
 export type AuthFixture = Awaited<ReturnType<typeof authFixture>>;
@@ -66,14 +65,11 @@ export const browserClient = (fixture: AuthFixture, origin = "http://localhost:3
     }
   };
 };
-export const tokenFrom = (message: AuthEmail | undefined): string => {
-  const value = message?.text.match(/#token=([A-Za-z0-9_-]{43})/)?.[1]; if (!value) throw new Error("Verification message not delivered"); return value;
-};
-export const signupVerified = async (fixture: AuthFixture, email: string) => {
+export const signupAccount = async (fixture: AuthFixture, email: string) => {
   const client = browserClient(fixture); await client.request("/auth/session");
   const password = "A sufficiently long unique password!";
-  await client.request("/auth/signup", "POST", { email, displayName: email.split("@")[0], password }); await fixture.auth.service.deliver();
-  const token = tokenFrom(fixture.messages.at(-1)); await client.request("/auth/verify-email", "POST", { token });
+  const signup = await client.request("/auth/signup", "POST", { email, displayName: email.split("@")[0], password });
+  if (signup.status !== 202) throw new Error("Test account signup failed");
   const login = await client.request("/auth/login", "POST", { email, password }); if (login.status !== 200) throw new Error("Test account login failed");
   return { client, password };
 };

@@ -1,6 +1,6 @@
 // Loopback-only browser fixture: real authentication, isolated memory persistence and fake providers.
 import { createServer } from "node:http";
-import { authFixture, tokenFrom } from "./auth.fixture.js";
+import { authFixture } from "./auth.fixture.js";
 
 if (process.env.NODE_ENV !== "test") throw new Error("Browser fixtures require NODE_ENV=test.");
 const fixture = await authFixture(false, ["http://127.0.0.1:3105"], 4305);
@@ -9,10 +9,6 @@ const control = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1:4306");
     response.setHeader("Content-Type", "application/json"); response.setHeader("Cache-Control", "no-store");
     if (request.method !== "GET") { response.writeHead(405).end(); return; }
-    if (url.pathname === "/test/mail") {
-      await fixture.auth.service.deliver(); const message = fixture.messages.filter((item) => item.to === url.searchParams.get("email")).at(-1);
-      response.end(JSON.stringify({ token: tokenFrom(message) })); return;
-    }
     if (url.pathname === "/test/state") {
       response.end(JSON.stringify({ runs: await fixture.memory.db.getCollection("story_agent_runs").find({}), projects: await fixture.memory.db.getCollection("story_agent_projects").find({}) })); return;
     }

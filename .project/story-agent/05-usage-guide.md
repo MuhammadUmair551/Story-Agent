@@ -4,8 +4,8 @@
 
 Use a local ignored `.env`; never commit keys. Configure API baseline values (`NODE_ENV`, `API_HOST`, `API_PORT`, `WEB_ORIGIN`, `LOG_LEVEL`), `MONGODB_URI`, and one complete provider.
 
-Phase 5 also requires `AUTH_PUBLIC_ORIGIN`, `AUTH_MAIL_ENCRYPTION_KEY`,
-`AUTH_EMAIL_FROM` and `AUTH_EMAIL_API_KEY` on the API host. See
+Phase 5 requires `AUTH_PUBLIC_ORIGIN` on the API host, included in the exact `WEB_ORIGIN`
+allowlist. No outbound email service or custom domain is required. See
 [authentication setup and rollout](11-authentication.md) before starting the API.
 The web app keeps `NEXT_PUBLIC_API_BASE_URL` as its upstream API address; browser
 requests now use the same-origin `/api` proxy. No secrets belong in `NEXT_PUBLIC_*`.
@@ -31,10 +31,11 @@ OTEL_SERVICE_NAME=story-agent-api
 
 MongoDB must permit creation of `story_agent_runs` and `story_agent_drafts` collections/indexes.
 It must also permit project and authentication collections, unique indexes and TTL indexes.
-Open `/signup`, verify the delivered email link, then sign in at `/login`. The workspace
-and `/account` require a verified session. Account settings support a display name change,
-password reset email, sign out and sign out from all sessions. Verification/reset links
-expire and are single use. Existing anonymous history is intentionally unavailable to accounts.
+Open `/signup`, then sign in immediately at `/login`. The workspace and `/account` require
+an authenticated session. Account settings support display name changes, password changes
+requiring the current password, sign out and sign out from all sessions. Password changes
+revoke every session. Email is an unverified login identifier; no email recovery is available.
+Store your password securely. Existing anonymous history stays quarantined.
 
 ## Commands
 
@@ -109,16 +110,16 @@ Do not change the frontend API URL or allow all `*.vercel.app` sites. Unlisted o
 blocked by browser CORS checks. Verify the `OPTIONS /story-agent/runs` response echoes the
 request's trusted origin and allows `Content-Type` and `X-Request-Id` before testing generation.
 Phase 5 browser requests go through Next's same-origin `/api` route, which forwards the
-trusted web Origin to Render. Keep the existing exact API allowlist. Verification email
-links use the canonical `AUTH_PUBLIC_ORIGIN`; an approved preview can be listed separately
-but does not become the canonical email origin automatically. The Next host must support
+trusted web Origin to Render. Keep the existing exact API allowlist. The canonical
+`AUTH_PUBLIC_ORIGIN` must be an allowed HTTPS origin in production; a free Vercel hostname
+is sufficient. The Next host must support
 the existing generation duration; its proxy bounds upstream requests at 110 seconds and
 does not extend a hosting platform's function limit.
 
 | Symptom | Action |
 |---|---|
 | API routes unavailable | Configure MongoDB and all authentication environment values; startup fails closed on invalid auth configuration. |
-| Authentication email absent | Check verified sending domain, Resend credentials, and encrypted outbox retry/failure logs; never expose token contents. |
+| Forgotten password | Email recovery is unavailable. Change the password from an active session only with the current password; no identity shortcut is supported. |
 | `401` / `403` | Sign in again, refresh the CSRF session and verify the exact web Origin. |
 | Immediate `Failed to fetch` on a deployment URL | Check its exact browser origin against the API's `WEB_ORIGIN`; a 204 preflight with a different `Access-Control-Allow-Origin` is rejected before generation. |
 | Provider unavailable/queued | Check complete provider vars, profile names, quota, and cooldown. |

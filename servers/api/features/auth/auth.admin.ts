@@ -12,6 +12,6 @@ if (!environment.MONGODB_URI) throw new Error("MongoDB is required for role prov
 const db = createMongoDbIntegration({ uri: environment.MONGODB_URI, logger: createLogger({ service: "auth-administration", level: "error" }) });
 await db.connect();
 try {
-  if (!await createAuthRepository(db).provisionRole(input.userId, input.role)) throw new Error("A verified account is required; no role was changed.");
+  if (!await createAuthRepository(db).provisionRole(input.userId, input.role)) throw new Error("An existing account ID is required; no role was changed.");
   process.stdout.write("Role updated. Existing sessions have been invalidated.\n");
 } finally { await db.disconnect(); }

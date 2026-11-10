@@ -6,7 +6,7 @@ import { createLogger } from "@workspace/logging";
 import { createApp, createServer, createShutdown } from "./bootstrap/index.js";
 import { createApiConfig, readApiEnvironment } from "./config/index.js";
 import { apiRuntime } from "./constants/index.js";
-import { createLlmGateway, createMongoDbIntegration, createEmailSender } from "./integrations/index.js";
+import { createLlmGateway, createMongoDbIntegration } from "./integrations/index.js";
 import { createAuthFeature, readAuthConfiguration } from "./features/auth/index.js";
 import { createStoryAgentFeature } from "./features/story-agent/index.js";
 
@@ -48,19 +48,17 @@ const storyAgent = config.mongodbUri
   ? createStoryAgentFeature({ db: database, llm, logger, clock: { now: Date.now }, queueIntervalMs: config.queueIntervalMs, maxConcurrentRuns: config.storyAgentMaxConcurrentRuns, maxRequestsPerWindow: config.storyAgentMaxRequestsPerWindow, requestWindowMs: config.storyAgentRequestWindowMs, maxTrackedClients: config.storyAgentMaxTrackedClients })
   : undefined;
 if (storyAgent) await storyAgent.ensureIndexes();
-const authentication = authConfig ? await createAuthFeature({ db: database, config: authConfig, origins: config.webOrigin.split(","), sendEmail: createEmailSender({ apiKey: authConfig.apiKey, from: authConfig.from }), logger }) : undefined;
+const authentication = authConfig ? await createAuthFeature({ db: database, config: authConfig, origins: config.webOrigin.split(",") }) : undefined;
 const app = createApp({ config, logger, persistence: database, authentication, ...(storyAgent ? { storyAgentRouteDependencies: storyAgent.routeDependencies, storyAgentScope: storyAgent.scope } : {}) });
 const server = createServer({ app, config, logger });
 
 const shutdown = createShutdown({ database, logger, server });
 await server.start();
 storyAgent?.queue.start();
-authentication?.start();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     storyAgent?.queue.stop();
-    authentication?.stop();
     void shutdown(signal)
       .then(async () => {
         try { await shutdownTelemetry(); }

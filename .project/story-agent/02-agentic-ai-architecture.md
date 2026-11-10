@@ -7,7 +7,7 @@ applicable; all application APIs now pass through the following authentication b
 
 ```text
 Browser -> Next /api/{auth,story-agent}/... -> Express authentication controller
-                                               | Mongo sessions / verified user
+                                               | Mongo sessions / authenticated user
                                                v
                                   Story Agent routes -> owner-scoped persistence
                                                | shared provider budgets / queue
@@ -17,11 +17,14 @@ Browser -> Next /api/{auth,story-agent}/... -> Express authentication controller
 
 The browser uses same-origin HttpOnly cookies. Next forwards only the session cookie,
 CSRF token, content type, origin and request correlation header to the configured API.
-The API derives ownership from a verified session and applies it to every project, run,
+The API derives ownership from an authenticated session and applies it to every project, run,
 draft, refinement, analysis and decision read/write. Anonymous historical data remains
 stored but quarantined. Admin privileges authorize an account directory, never a bypass
 of Story Agent ownership. Signup cannot grant privileges; explicit offline role changes
 invalidate existing sessions. No authentication infrastructure is duplicated in the web app.
+Signup is immediately usable. Email is an unverified login identifier, with no outbound
+email or recovery infrastructure. Password change requires the current password and
+revokes all sessions. Canonical HTTPS origin validation remains required.
 
 Provider concurrency, queue admission and model budgets remain shared. The existing
 submission window is keyed by authenticated owner rather than the proxy's socket address.

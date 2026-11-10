@@ -5,7 +5,7 @@ import type { AuthService } from "./auth.service.js";
 import { authError } from "./auth.service.js";
 import { equalSecret } from "./auth.crypto.js";
 import { publicUser } from "./auth.types.js";
-import { signupSchema, loginSchema, emailInputSchema, tokenInputSchema, resetInputSchema, profileInputSchema } from "./auth.validation.js";
+import { signupSchema, loginSchema, changePasswordSchema, profileInputSchema } from "./auth.validation.js";
 
 type Identity = NonNullable<Awaited<ReturnType<AuthService["resolve"]>>>;
 export type AuthBoundary = Readonly<{ router: Router; requireUser: RequestHandler; ownerId: (request: Request) => string }>;
@@ -56,16 +56,12 @@ export const createAuthController = (service: AuthService, config: AuthConfig, o
     const user = await service.login(input.email, input.password); const created = await service.newSession(user); await service.logout(previous.session);
     response.cookie(cookieName, created.token, { ...cookieOptions, maxAge: 8 * 60 * 60_000 }).json({ user: created.user, csrfToken: created.csrfToken });
   }));
-  for (const [path, purpose] of [["forgot-password", "reset"], ["resend-verification", "verify"]] as const) router.post(`/auth/${path}`, handle(async (request, response) => {
-    await csrf(request); const input = emailInputSchema.parse(request.body); await service.rate(path, request.socket.remoteAddress ?? "unknown", input.email);
-    response.status(202).json(await service.email(input.email, purpose));
-  }));
-  router.post("/auth/verify-email", handle(async (request, response) => {
-    await csrf(request); await service.rate("verify", request.socket.remoteAddress ?? "unknown"); response.json(await service.verify(tokenInputSchema.parse(request.body).token));
-  }));
-  router.post("/auth/reset-password", handle(async (request, response) => {
-    await csrf(request); await service.rate("reset", request.socket.remoteAddress ?? "unknown"); const input = resetInputSchema.parse(request.body);
-    response.json(await service.reset(input.token, input.password));
+  router.post("/auth/change-password", requireUser, handle(async (request, response) => {
+    const user = principals.get(request)?.user; if (!user) throw authError(401);
+    await service.rate("change-password", request.socket.remoteAddress ?? "unknown", user.email);
+    const input = changePasswordSchema.parse(request.body);
+    await service.changePassword(user, input.currentPassword, input.newPassword);
+    response.clearCookie(cookieName, cookieOptions).json({ message: "Password changed. All sessions signed out. Sign in with your new password." });
   }));
   router.post("/auth/logout", requireUser, handle(async (request, response) => {
     const identity = principals.get(request); if (!identity) throw authError(401); await service.logout(identity.session);

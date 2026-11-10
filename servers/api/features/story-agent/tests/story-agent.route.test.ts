@@ -16,7 +16,6 @@ import { createMemoryPersistence } from "./story-agent.memory.js";
 import { createStoryAgentFeature } from "../index.js";
 import { createApp } from "../../../bootstrap/index.js";
 import { createApiConfig, readApiEnvironment } from "../../../config/index.js";
-import { randomBytes } from "node:crypto";
 import { createAuthFeature } from "../../auth/public.js";
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
@@ -198,10 +197,10 @@ void test("generation CORS accepts each configured exact origin and preserves HT
   const config = createApiConfig(readApiEnvironment({ NODE_ENV: "test", API_HOST: "127.0.0.1", API_PORT: "4000", LOG_LEVEL: "silent", WEB_ORIGIN: `${production},${deployment}` }));
   let calls = 0; let pipeline = result("draft");
   const saved: unknown[] = [];
-  const authMemory = createMemoryPersistence(); let verification = "";
-  const authentication = await createAuthFeature({ db: authMemory.db, config: { secure: false, publicOrigin: production, mailKey: randomBytes(32).toString("base64"), from: "mail@example.test", apiKey: "fixture-only" }, origins: [production, deployment], logger, sendEmail: (message) => { verification = message.text.match(/#token=([A-Za-z0-9_-]{43})/)?.[1] ?? ""; return Promise.resolve(); } });
+  const authMemory = createMemoryPersistence();
+  const authentication = await createAuthFeature({ db: authMemory.db, config: { secure: false, publicOrigin: production }, origins: [production, deployment] });
   const credentials = { email: "cors@example.test", displayName: "CORS test", password: "A sufficiently long unique password!" };
-  await authentication.service.signup(credentials); await authentication.service.deliver(); await authentication.service.verify(verification);
+  await authentication.service.signup(credentials);
   const user = await authentication.service.login(credentials.email, credentials.password); const session = await authentication.service.newSession(user);
   const dependencies = {
     db, ...additionalRepositories(), logger, clock: { now: () => 0 }, repository: createRepository(saved),

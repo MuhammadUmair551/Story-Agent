@@ -1,7 +1,7 @@
 "use client";
 import { z } from "zod";
 import type { AccountSession } from "@workspace/types";
-export const accountSchema = z.object({ userId: z.string(), email: z.email(), displayName: z.string(), role: z.enum(["user", "admin"]), verified: z.boolean() });
+export const accountSchema = z.object({ userId: z.string(), email: z.email(), displayName: z.string(), role: z.enum(["user", "admin"]) });
 const sessionSchema = z.object({ user: accountSchema.nullable(), csrfToken: z.string().min(32) });
 let cached: Promise<AccountSession> | undefined;
 // A full navigation drops the previous account's client and server-component caches.
@@ -28,7 +28,7 @@ export const accountRequest = async (path: string, body?: unknown, method = "POS
   const payload: unknown = await response.json(); const record = z.record(z.string(), z.unknown()).parse(payload);
   if (!response.ok) throw new Error(typeof record.error === "string" ? record.error : "Account request failed.");
   if (path === "/login") cached = Promise.resolve(sessionSchema.parse(payload));
-  if (["/logout", "/logout-all", "/reset-password"].includes(path)) cached = undefined;
-  if (["/login", "/logout", "/logout-all", "/reset-password"].includes(path) && typeof BroadcastChannel !== "undefined") { const channel = new BroadcastChannel("story-account"); channel.postMessage("session-changed"); channel.close(); }
+  if (["/logout", "/logout-all", "/change-password"].includes(path)) cached = undefined;
+  if (["/login", "/logout", "/logout-all", "/change-password"].includes(path) && typeof BroadcastChannel !== "undefined") { const channel = new BroadcastChannel("story-account"); channel.postMessage("session-changed"); channel.close(); }
   return record;
 };

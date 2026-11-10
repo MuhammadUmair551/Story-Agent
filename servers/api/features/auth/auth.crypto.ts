@@ -1,4 +1,4 @@
-import { randomBytes, scrypt, timingSafeEqual, createHash, createCipheriv, createDecipheriv } from "node:crypto";
+import { randomBytes, scrypt, timingSafeEqual, createHash } from "node:crypto";
 
 export const randomToken = (): string => randomBytes(32).toString("base64url");
 export const tokenHash = (token: string): string => createHash("sha256").update(token).digest("hex");
@@ -17,16 +17,4 @@ export const verifyPassword = async (password: string, stored: string): Promise<
   const [version, salt, expected] = stored.split("$");
   if (version !== "scrypt-v1" || !salt || !expected || !/^[a-f0-9]{32}$/.test(salt) || !/^[a-f0-9]{128}$/.test(expected)) return false;
   return equalSecret((await derive(password, salt)).toString("hex"), expected);
-};
-export const encryptMail = (text: string, key: string): string => {
-  const nonce = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", Buffer.from(key, "base64"), nonce);
-  const encrypted = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-  return [nonce, cipher.getAuthTag(), encrypted].map((part) => part.toString("base64url")).join(".");
-};
-export const decryptMail = (text: string, key: string): string => {
-  const [nonce, tag, data] = text.split(".");
-  if (!nonce || !tag || !data) throw new Error("Invalid encrypted email.");
-  const cipher = createDecipheriv("aes-256-gcm", Buffer.from(key, "base64"), Buffer.from(nonce, "base64url"));
-  cipher.setAuthTag(Buffer.from(tag, "base64url"));
-  return Buffer.concat([cipher.update(Buffer.from(data, "base64url")), cipher.final()]).toString("utf8");
 };
