@@ -3,7 +3,7 @@ import type { ValidatedApiEnvironment } from "../../types/index.js";
 export const emailSchema = z.string().trim().max(254).transform((value) => value.normalize("NFKC").toLowerCase()).pipe(z.email());
 export const passwordSchema = z.string().transform((value) => value.normalize("NFC")).pipe(z.string().min(15, "Use at least 15 characters.").max(128).refine((value) => !["passwordpassword", "123456789012345", "qwertyuiopasdfgh", "letmeinletmeinletmein"].includes(value.toLowerCase()), "Choose a less predictable password."));
 export const signupSchema = z.object({ email: emailSchema, password: passwordSchema, displayName: z.string().trim().min(1).max(80) }).strict();
-export const loginSchema = z.object({ email: emailSchema, password: z.string().min(1).max(128) }).strict();
+export const loginSchema = z.object({ email: emailSchema, password: z.string().transform((value) => value.normalize("NFC")).pipe(z.string().min(1).max(128)) }).strict();
 export const emailInputSchema = z.object({ email: emailSchema }).strict();
 export const tokenInputSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict();
 export const resetInputSchema = tokenInputSchema.extend({ password: passwordSchema }).strict();

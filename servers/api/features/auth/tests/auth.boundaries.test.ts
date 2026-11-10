@@ -2,13 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { createAuthService } from "../auth.service.js";
-import { readAuthConfiguration } from "../auth.validation.js";
+import { readAuthConfiguration, signupSchema, loginSchema } from "../auth.validation.js";
 import { readApiEnvironment } from "../../../config/index.js";
 import { tokenHash } from "../auth.crypto.js";
 import { authFixture, browserClient, signupVerified, tokenFrom, plan } from "./auth.fixture.js";
 import type { StoryAgentAnalysis, StoryAgentRefinement, StoryAgentRunResponse } from "@workspace/types";
 
 void test("authentication config rejects missing secrets, insecure public origins and untrusted email links", () => {
+  const credentials = { email: "unicode@example.test", password: "e\u0301".repeat(128) };
+  const registered = signupSchema.parse({ ...credentials, displayName: "Reader" });
+  assert.equal(loginSchema.parse(credentials).password, registered.password);
+  assert.equal(registered.password.length, 128);
   const environment = { NODE_ENV: "production", API_HOST: "127.0.0.1", API_PORT: "4000", WEB_ORIGIN: "https://web.example.test", LOG_LEVEL: "silent", AUTH_PUBLIC_ORIGIN: "https://web.example.test", AUTH_EMAIL_FROM: "sender@example.test", AUTH_EMAIL_API_KEY: "fixture-only-api-key", AUTH_MAIL_ENCRYPTION_KEY: randomBytes(32).toString("base64") };
   assert.equal(readAuthConfiguration(readApiEnvironment(environment)).secure, true);
   for (const change of [{ AUTH_MAIL_ENCRYPTION_KEY: "" }, { AUTH_EMAIL_API_KEY: "" }, { AUTH_PUBLIC_ORIGIN: "http://web.example.test" }, { AUTH_PUBLIC_ORIGIN: "https://attacker.test" }, { AUTH_PUBLIC_ORIGIN: "https://web.example.test/path" }]) assert.throws(() => readAuthConfiguration(readApiEnvironment({ ...environment, ...change })));
