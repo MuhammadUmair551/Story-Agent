@@ -25,6 +25,25 @@ void test("derives API configuration from validated environment input", () => {
   });
 });
 
+void test("normalizes explicit trusted web origins while preserving single-origin configuration", () => {
+  const input = { NODE_ENV: "production", API_HOST: "0.0.0.0", API_PORT: "8080", LOG_LEVEL: "warn" };
+  const production = "https://story-agent.vercel.app";
+  const deployment = "https://story-agent-q73gz3x33-umair-5b36.vercel.app";
+  const environment = readApiEnvironment({ ...input, WEB_ORIGIN: ` ${production}/, ${deployment},${production} ` });
+  assert.equal(createApiConfig(environment).webOrigin, `${production},${deployment}`);
+  assert.equal(createApiConfig(readApiEnvironment({ ...input, WEB_ORIGIN: "http://localhost:3000" })).webOrigin, "http://localhost:3000");
+});
+
+void test("rejects wildcard, opaque, empty and non-origin web allowlist entries", () => {
+  const input = { NODE_ENV: "production", API_HOST: "0.0.0.0", API_PORT: "8080", LOG_LEVEL: "warn" };
+  const credentialOrigin = new URL("https://example.test");
+  credentialOrigin.username = "user";
+  credentialOrigin.password = "password";
+  for (const origin of ["*", "null", "https://*.vercel.app", "ftp://example.test", "https://example.test/path", "https://example.test?token=value", "https://example.test/#fragment", credentialOrigin.href, "https://example.test,", ",https://example.test", ""]) {
+    assert.throws(() => readApiEnvironment({ ...input, WEB_ORIGIN: origin }), ZodError, origin);
+  }
+});
+
 void test("loads named providers and preserves the legacy provider environment", () => {
   const named = readApiEnvironment({
     NODE_ENV: "test", API_HOST: "127.0.0.1", API_PORT: "4000", WEB_ORIGIN: "http://localhost:3000", LOG_LEVEL: "silent",

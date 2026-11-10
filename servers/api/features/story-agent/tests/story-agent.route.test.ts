@@ -14,6 +14,8 @@ import { createProjectRepository } from "../story-agent.projects.repository.js";
 import { createIntelligenceRepository } from "../story-agent.intelligence.repository.js";
 import { createMemoryPersistence } from "./story-agent.memory.js";
 import { createStoryAgentFeature } from "../index.js";
+import { createApp } from "../../../bootstrap/index.js";
+import { createApiConfig, readApiEnvironment } from "../../../config/index.js";
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 const story = { title: "A writer creates stories", intent: "Plan", epic: "Planning", size: "S" as const, acceptanceCriteria: ["Stories appear"], states: [], dependsOn: [], openQuestions: [], sliceRationale: "Proves creation." };
@@ -185,5 +187,49 @@ void test("project routes use the injected repository without touching the route
     const response = await fetch(`http://127.0.0.1:${String(address.port)}/story-agent/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Reading", rules: { glossary: [], roles: [], naming: [], rules: [], acceptanceCriteria: { format: "checklist", instructions: "", examples: [] } } }) });
     assert.equal(response.status, 200);
     assert.equal((await dependencies.projects.list())[0]?.name, "Reading");
+  } finally { await closeServer(server); }
+});
+
+void test("generation CORS accepts each configured exact origin and preserves HTTP errors", async () => {
+  const production = "https://story-agent.vercel.app";
+  const deployment = "https://story-agent-q73gz3x33-umair-5b36.vercel.app";
+  const config = createApiConfig(readApiEnvironment({ NODE_ENV: "test", API_HOST: "127.0.0.1", API_PORT: "4000", LOG_LEVEL: "silent", WEB_ORIGIN: `${production},${deployment}` }));
+  let calls = 0; let pipeline = result("draft");
+  const saved: unknown[] = [];
+  const app = createApp({ config, logger, persistence: db, storyAgentRouteDependencies: {
+    db, ...additionalRepositories(), logger, clock: { now: () => 0 }, repository: createRepository(saved),
+    service: { run: async () => { calls++; return pipeline; } }, capacity: capacity()
+  } });
+  const server = createServer(app);
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address(); assert.ok(address && typeof address === "object");
+  const endpoint = `http://127.0.0.1:${String(address.port)}/story-agent/runs`;
+  const headers = (origin: string) => ({ Origin: origin, "Content-Type": "application/json", "X-Request-Id": "smoke2-generation" });
+  const requirement = "Build an e-commerce platform where customers can browse products, add items to cart, and place orders. Admins can manage products and track orders.";
+  try {
+    for (const origin of [production, deployment]) {
+      const preflight = await fetch(endpoint, { method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type,x-request-id" } });
+      assert.equal(preflight.status, 204); assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
+      assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /X-Request-Id/i);
+      assert.match(preflight.headers.get("access-control-allow-methods") ?? "", /POST/);
+      assert.match(preflight.headers.get("vary") ?? "", /Origin/i); assert.equal(calls, origin === production ? 0 : 1);
+      const response = await fetch(endpoint, { method: "POST", headers: headers(origin), body: JSON.stringify({ requirement }) });
+      assert.equal(response.status, 200); assert.equal(response.headers.get("access-control-allow-origin"), origin);
+      assert.equal((await response.json() as { status: string }).status, "draft");
+    }
+    for (const origin of ["https://untrusted.vercel.app", `${deployment}.attacker.test`, "null"]) {
+      const response = await fetch(endpoint, { method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "POST" } });
+      assert.equal(response.status, 204); assert.equal(response.headers.get("access-control-allow-origin"), null);
+      assert.match(response.headers.get("vary") ?? "", /Origin/i);
+    }
+    assert.equal(calls, 2);
+    const invalid = await fetch(endpoint, { method: "POST", headers: headers(deployment), body: JSON.stringify({ requirement: "" }) });
+    assert.equal(invalid.status, 400); assert.equal(invalid.headers.get("access-control-allow-origin"), deployment); assert.equal(calls, 2);
+    pipeline = result("failed");
+    const failed = await fetch(endpoint, { method: "POST", headers: headers(deployment), body: JSON.stringify({ requirement }) });
+    assert.equal(failed.status, 500); assert.equal(failed.headers.get("access-control-allow-origin"), deployment);
+    assert.equal((await failed.json() as { error: string }).error, "provider_failed");
+    const withoutOrigin = await fetch(endpoint, { method: "OPTIONS" });
+    assert.equal(withoutOrigin.headers.get("access-control-allow-origin"), null);
   } finally { await closeServer(server); }
 });

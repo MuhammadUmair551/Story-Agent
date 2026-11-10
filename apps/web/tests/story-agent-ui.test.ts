@@ -97,6 +97,15 @@ test("opening an entry uses GET; deleting it uses an encoded DELETE and surfaces
   await assert.rejects(missing.deleteRun("one"), /History entry not found/);
 });
 
+test("generation keeps transport and API failures visible without inventing a draft", async () => {
+  const requirement = "Build an e-commerce platform where customers can browse products, add items to cart, and place orders. Admins can manage products and track orders.";
+  const networkError = new TypeError("Failed to fetch");
+  const disconnected = createStoryAgentClient("https://api.example.test", () => Promise.reject(networkError));
+  await assert.rejects(disconnected.createRun({ requirement }), (error: unknown) => error === networkError);
+  const unavailable = createStoryAgentClient("https://api.example.test", () => Promise.resolve(Response.json({ error: "provider_failed" }, { status: 500 })));
+  await assert.rejects(unavailable.createRun({ requirement }), (error: unknown) => error instanceof Error && error.message === "provider_failed" && "status" in error && error.status === 500);
+});
+
 test("history deletion requires confirmation, removes only the selected entry and refreshes after success", async () => {
   const events: string[] = []; let history = ["one", "two"];
   const input = { runId: "one", deleteRun: (id: string) => { events.push(`delete:${id}`); return Promise.resolve(); }, onDeleted: (id: string) => { history = history.filter((item) => item !== id); events.push(`removed:${id}`); }, refresh: () => { events.push("refresh"); return Promise.resolve(); } };
