@@ -1,11 +1,23 @@
 import { z } from "zod";
 import type { ValidatedApiEnvironment } from "../types/index.js";
 
+const webOriginSchema = z.url().pipe(z.string().refine((value) => {
+  const url = new URL(value);
+  return (url.protocol === "https:" || url.protocol === "http:")
+    && !url.hostname.includes("*") && !url.username && !url.password
+    && url.pathname === "/" && !url.search && !url.hash;
+}, "Use an exact HTTP(S) origin without wildcards, credentials, a path, query or fragment."));
+
+const webOriginsSchema = z.string()
+  .transform((value) => value.split(",").map((origin) => origin.trim()))
+  .pipe(z.array(webOriginSchema).min(1))
+  .transform((origins) => [...new Set(origins.map((origin) => new URL(origin).origin))].join(","));
+
 export const apiEnvironmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]),
   API_HOST: z.string().min(1),
   API_PORT: z.coerce.number().int().min(1).max(65_535),
-  WEB_ORIGIN: z.url(),
+  WEB_ORIGIN: webOriginsSchema,
   MONGODB_URI: z.string().min(1).optional(),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]),
   LLM_PROVIDERS: z.string().min(1).optional(),

@@ -75,9 +75,27 @@ Vercel frontend + persistent API host recommendation and telemetry setup.
 
 ## Troubleshooting
 
+The browser page's origin must be explicitly allowed by the API's `WEB_ORIGIN` setting.
+Use `https://story-agent.vercel.app` for the current production app. A deployment-specific
+Vercel URL has a different origin, even when it serves the same build. To enable an approved
+deployment URL, keep the production origin and add that exact origin, separated by a comma:
+
+```text
+WEB_ORIGIN=https://story-agent.vercel.app,https://story-agent-q73gz3x33-umair-5b36.vercel.app
+```
+
+Deploy the allowlist-capable API code before applying a comma-separated value; older API
+versions accept only one origin. Set this on the API host (currently Render), after approval,
+and restart the API to apply it.
+Do not change the frontend API URL or allow all `*.vercel.app` sites. Unlisted origins remain
+blocked by browser CORS checks. Verify the `OPTIONS /story-agent/runs` response echoes the
+request's trusted origin and allows `Content-Type` and `X-Request-Id` before testing generation.
+The frontend calls Render directly; its generation requests do not run as Vercel functions.
+
 | Symptom | Action |
 |---|---|
 | API routes 404 | Configure `MONGODB_URI` and restart; routes compose only with persistence. |
+| Immediate `Failed to fetch` on a deployment URL | Check its exact browser origin against the API's `WEB_ORIGIN`; a 204 preflight with a different `Access-Control-Allow-Origin` is rejected before generation. |
 | Provider unavailable/queued | Check complete provider vars, profile names, quota, and cooldown. |
 | Empty history | Check Mongo reachability and `NEXT_PUBLIC_API_BASE_URL`. |
 | Input rejected | Requirement is 1–4000 chars; API context max is 8000. |
