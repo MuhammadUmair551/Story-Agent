@@ -162,6 +162,10 @@ impact analysis, profile edits, logout, two-account isolation, IDOR, role escala
 forgot/reset/replay, individual history deletion, logout-all and desktop/mobile layout.
 It is separate from unit validation because it requires a browser and isolated servers.
 
+The control-plane test glob is quoted so Node, rather than the invoking shell, discovers
+all nested test files. This includes the seven scanner regressions that an unquoted
+POSIX shell glob previously omitted in CI; no test or security policy is disabled.
+
 Real Resend delivery, Mongo server TTL/index/concurrency behavior and production cookie/
 platform deployment remain external integration checks until configured and exercised.
 Offline/fake-provider tests do not establish live provider quality or availability.
@@ -213,6 +217,7 @@ Security reference: [OWASP password storage](https://cheatsheetseries.owasp.org/
 - `apps/web/tests/auth.test.tsx`
 - `apps/web/tests/browser/story-agent-authentication.mjs`
 - `apps/web/tests/integration/home-page.test.tsx`
+- `package.json`
 - `packages/types/src/api/auth/index.ts`
 - `packages/types/src/api/index.ts`
 - `packages/types/src/index.ts`
