@@ -10,7 +10,7 @@ export type MongoFindOptions = Readonly<{
   skip?: number;
 }>;
 export type MongoUpdateResult = Readonly<{ matchedCount: number; modifiedCount: number }>;
-export type MongoIndexOptions = Readonly<{ unique?: boolean; name?: string }>;
+export type MongoIndexOptions = Readonly<{ unique?: boolean; name?: string; expireAfterSeconds?: number }>;
 export type MongoFindOneAndUpdateOptions = Readonly<{ sort?: Record<string, 1 | -1> }>;
 export type MongoUpdate<TDocument extends MongoDocument> = Readonly<{
   $set?: Partial<TDocument>;

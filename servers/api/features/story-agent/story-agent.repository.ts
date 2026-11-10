@@ -6,6 +6,7 @@ import type { StoryAgentAnalysis } from "@workspace/types";
 
 export type StoryAgentRunDocument = Readonly<Record<string, unknown>> & Readonly<{
   runId: string;
+  ownerId?: string | undefined;
   status: StoryAgentRunStatus;
   requirement: string;
   projectId?: string | undefined;
@@ -37,6 +38,7 @@ export type StoryAgentRunDocument = Readonly<Record<string, unknown>> & Readonly
 
 export type StoryAgentDraftDocument = Readonly<Record<string, unknown>> & Readonly<{
   runId: string;
+  ownerId?: string | undefined;
   stories: readonly StoryAgentStory[];
   plan?: StoryAgentPlan | undefined;
   createdAt: string;
@@ -57,9 +59,10 @@ export type StoryAgentRepository = Readonly<{
   saveRefinements: (runId: string, expectedVersion: number, refinements: readonly StoryAgentRefinement[], now: string, expectedReviewVersion?: number) => Promise<boolean>;
 }>;
 
-export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepository => {
+export const createStoryAgentRepository = (db: MongoPersistence, ownedQueueOnly = false): StoryAgentRepository => {
   const runs = db.getCollection<StoryAgentRunDocument>("story_agent_runs");
   const drafts = db.getCollection<StoryAgentDraftDocument>("story_agent_drafts");
+  const queueOwner = ownedQueueOnly ? { ownerId: { $exists: true } } : {};
   return Object.freeze({
     saveRun: async (document): Promise<void> => { await runs.insertOne(document); },
     updateRunStatus: async (runId, status, extra = {}): Promise<void> => {
@@ -83,15 +86,16 @@ export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepo
       await runs.deleteOne({ runId });
       return "deleted";
     },
-    countQueuedRuns: async (): Promise<number> => await runs.countDocuments({ status: "queued", deletingAt: { $exists: false } }),
+    countQueuedRuns: async (): Promise<number> => await runs.countDocuments({ ...queueOwner, status: "queued", deletingAt: { $exists: false } }),
     getQueueStats: async () => {
       const [depth, oldest] = await Promise.all([
-        runs.countDocuments({ status: "queued", deletingAt: { $exists: false } }),
-        runs.find({ status: "queued", deletingAt: { $exists: false } }, { sort: { createdAt: 1 }, limit: 1 })
+        runs.countDocuments({ ...queueOwner, status: "queued", deletingAt: { $exists: false } }),
+        runs.find({ ...queueOwner, status: "queued", deletingAt: { $exists: false } }, { sort: { createdAt: 1 }, limit: 1 })
       ]);
       return Object.freeze({ depth, ...(oldest[0] ? { oldestCreatedAt: oldest[0].createdAt } : {}) });
     },
     claimQueuedRun: async (now, lockedUntil): Promise<StoryAgentRunDocument | null> => await runs.findOneAndUpdate({
+      ...queueOwner,
       status: "queued",
       deletingAt: { $exists: false },
       nextAttemptAt: { $lte: now },
@@ -100,6 +104,7 @@ export const createStoryAgentRepository = (db: MongoPersistence): StoryAgentRepo
     ensureIndexes: async (): Promise<void> => {
       await runs.createIndex({ runId: 1 }, { unique: true, name: "story_agent_runs_run_id" });
       await runs.createIndex({ createdAt: -1 }, { name: "story_agent_runs_created_at" });
+      await runs.createIndex({ ownerId: 1, createdAt: -1 }, { name: "story_agent_runs_owner_created" });
       await runs.createIndex({ status: 1, nextAttemptAt: 1, lockedUntil: 1, createdAt: 1 }, { name: "story_agent_runs_queue_claim" });
       await drafts.createIndex({ runId: 1 }, { unique: true, name: "story_agent_drafts_run_id" });
     }

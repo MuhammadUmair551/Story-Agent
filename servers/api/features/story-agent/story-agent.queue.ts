@@ -64,7 +64,7 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
       try {
         const result = await service.run({ requirement: run.requirement, ...(run.context ? { context: run.context } : {}), ...(run.projectId ? { projectId: run.projectId, projectRules: run.projectRules } : {}) });
         if (result.status === "draft") {
-          await repository.saveDraft({ runId: run.runId, stories: result.stories ?? [], ...(result.plan ? { plan: result.plan } : {}), createdAt: now });
+          await repository.saveDraft({ runId: run.runId, ...(run.ownerId ? { ownerId: run.ownerId } : {}), stories: result.stories ?? [], ...(result.plan ? { plan: result.plan } : {}), createdAt: now });
           await repository.updateRunStatus(run.runId, "draft", resultFields(result, now));
           recordQueueEvent("completed");
           recordQueueProcessing(clock.now() - processingStartedAt, "draft");

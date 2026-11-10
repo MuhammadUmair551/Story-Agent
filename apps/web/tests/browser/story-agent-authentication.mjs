@@ -1,0 +1,137 @@
+// Run with the isolated auth.browser-fixture API (4305/control 4306), production web (3105)
+// and a dedicated Chromium/Edge debugging profile. Never points at a live account or database.
+// node apps/web/tests/browser/story-agent-authentication.mjs http://127.0.0.1:3105 http://127.0.0.1:9337
+import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+
+const web = new URL(process.argv[2] ?? ""); const debugging = new URL(process.argv[3] ?? "");
+for (const url of [web, debugging]) assert.ok(url.protocol === "http:" && url.hostname === "127.0.0.1", "Use isolated loopback servers only.");
+assert.equal(web.port, "3105", "Use the dedicated authentication browser fixture.");
+const control = "http://127.0.0.1:4306";
+const tab = await (await fetch(`${debugging.origin}/json/new?about:blank`, { method: "PUT" })).json();
+const socket = new WebSocket(tab.webSocketDebuggerUrl);
+await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+let sequence = 0, assertions = 0; const pending = new Map(), exceptions = [], requests = []; const requestPaths = new Map();
+socket.onmessage = ({ data }) => {
+  const message = JSON.parse(data); const callback = pending.get(message.id);
+  if (callback) { pending.delete(message.id); if (message.error) callback.reject(new Error(JSON.stringify(message.error))); else callback.resolve(message.result); }
+  if (message.method === "Runtime.exceptionThrown") exceptions.push(message.params.exceptionDetails.text);
+  if (message.method === "Network.requestWillBeSent") {
+    const path = new URL(message.params.request.url).pathname;
+    if (path.startsWith("/api/")) { const record = { path, method: message.params.request.method }; requests.push(record); requestPaths.set(message.params.requestId, record); }
+  }
+  if (message.method === "Network.responseReceived") { const record = requestPaths.get(message.params.requestId); if (record) record.status = message.params.response.status; }
+};
+const send = (method, params = {}) => new Promise((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
+const evaluate = async (expression) => { const result = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails)); return result.result?.value; };
+const waitFor = async (expression) => { const deadline = Date.now() + 60000; while (Date.now() < deadline) { if (await evaluate(`Boolean(${expression})`)) return; await new Promise((resolve) => setTimeout(resolve, 100)); } throw new Error(`Timed out: ${expression}`); };
+const click = async (text) => {
+  const selector = `[...document.querySelectorAll('button')].find(el => el.textContent.trim() === ${JSON.stringify(text)})`; await waitFor(`${selector} && !${selector}.disabled`);
+  const point = await evaluate(`(() => { const button = ${selector}; button.scrollIntoView({block:'center'}); const rect=button.getBoundingClientRect(); return {x:rect.x+rect.width/2,y:rect.y+rect.height/2}; })()`);
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...point });
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...point });
+};
+const navigate = async (path, expected = path.split("#")[0]) => {
+  const start = requests.length;
+  await send("Page.navigate", { url: `${web.origin}${path}` }); await waitFor(`location.pathname === ${JSON.stringify(expected)} && document.readyState === 'complete'`);
+  // Server-rendered controls precede hydration. Wait for the real client session bootstrap.
+  const deadline = Date.now() + 60000;
+  while (!requests.slice(start).some(item => item.path === "/api/auth/session" && item.status === 200)) {
+    if (Date.now() > deadline) throw new Error(`Client session bootstrap timed out at ${expected}`);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+};
+const input = async (selector, value) => {
+  await evaluate(`(() => { const element = ${selector}; if (!element) throw new Error('Input missing'); element.focus(); element.select(); })()`);
+  await send("Input.insertText", { text: value });
+};
+const fill = async (label, value) => await input(`[...document.querySelectorAll('label')].find(el => el.firstChild?.textContent.trim() === ${JSON.stringify(label)})?.querySelector('input,textarea')`, value);
+const check = (condition, message) => { assertions++; assert.ok(condition, message); };
+const state = async () => await (await fetch(`${control}/test/state`)).json();
+const mail = async (email) => (await (await fetch(`${control}/test/mail?email=${encodeURIComponent(email)}`)).json()).token;
+const api = async (path, method = "GET", body) => await evaluate(`(async () => { const session = await (await fetch('/api/auth/session')).json(); const response = await fetch(${JSON.stringify(`/api${path}`)}, {method:${JSON.stringify(method)},headers:{'Content-Type':'application/json','X-CSRF-Token':session.csrfToken},${body === undefined ? "" : `body:JSON.stringify(${JSON.stringify(body)}),`}});return {status:response.status,data:await response.json()}; })()`);
+const password = "A browser journey unique password!";
+const signup = async (email, name) => {
+  await navigate("/signup"); await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Display name", name); await fill("Email", email); await fill("Password", password); await click("Create account");
+  await waitFor("document.querySelector('[role=status]')?.textContent.includes('eligible')"); check(true, "Signup uses a generic email confirmation");
+  const token = await mail(email); check(typeof token === "string", "Verification delivered through the encrypted outbox");
+  await navigate(`/verify-email#token=${token}`, "/verify-email"); await click("Verify email");
+  await waitFor("document.querySelector('[role=status]')?.textContent.includes('Email verified')");
+  check(await evaluate("!location.hash"), "Verification token removed from URL");
+};
+const login = async (email, secret = password) => { await navigate("/login"); await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Email", email); await fill("Password", secret); await click("Sign in"); };
+
+try {
+  await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable"); await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
+  await navigate("/", "/login"); check(true, "Anonymous workspace is redirected to login");
+  check((await api("/story-agent/runs")).status === 401, "Anonymous API access denied");
+  await signup("alice@example.test", "Alice");
+  await login("alice@example.test", "Incorrect password for the journey!");
+  await waitFor("document.querySelector('[role=alert]')?.textContent.includes('invalid')"); check(true, "Invalid credentials remain on the login form");
+  await fill("Password", password); await click("Sign in"); await waitFor("location.pathname === '/' && document.querySelector('.story-forge')");
+  check(await evaluate("document.querySelector('.auth-session').innerText.includes('Alice')"), "Signed-in identity replaces the placeholder");
+  check(await evaluate("!document.cookie.includes('story_session') && localStorage.length === 0 && sessionStorage.length === 0"), "Session is HttpOnly and absent from browser token storage");
+  const cookies = (await send("Network.getCookies", { urls: [web.origin] })).cookies;
+  check(cookies.some(cookie => cookie.name === "story_session" && cookie.httpOnly && cookie.sameSite === "Lax"), "Actual browser session cookie attributes verified");
+  await evaluate("document.querySelector('.forge-project summary').click()"); await fill("Project name", "Alice private project"); await click("Create project");
+  await waitFor("[...document.querySelectorAll('button')].some(el => el.textContent.trim() === 'Save rules')");
+  await click("Add glossary term"); await fill("Term", "Reader"); await fill("Definition", "A person resuming a chapter"); await fill("Aliases (comma separated)", "Bookworm"); await click("Save rules");
+  await waitFor("document.body.innerText.includes('Project rules saved.')");
+  await input("document.querySelector('.forge-prompt textarea')", "Readers resume chapters from saved progress."); await click("Shape it");
+  await waitFor("document.querySelector('.delivery-initiative') && document.querySelector('.forge-quality')");
+  const saved = await state(); const run = saved.runs[0]; const project = saved.projects[0];
+  check(Boolean(run.ownerId && project.ownerId === run.ownerId), "Projects and generations receive the server owner");
+  check(Boolean(run.plan.initiative.epics[0].features[0].stories[0].tasks.length), "Complete five-level hierarchy generated through authenticated proxy");
+  check(run.projectRules.glossary[0].aliases[0] === "Bookworm", "Project glossary snapshot preserved");
+  await click("Review backlog"); await waitFor("document.querySelector('.forge-intelligence > details')");
+  check((await state()).runs[0].analyses[0].coverage !== undefined, "Evidence review persists coverage through authenticated API");
+  await fill("Updated requirement", "Readers resume chapters from saved progress while offline."); await click("Analyze requirement change");
+  await waitFor("document.querySelectorAll('.forge-intelligence > details').length === 2");
+  check((await state()).runs[0].analyses[1].kind === "impact", "Requirement Impact Analysis retained");
+  await click("Propose refinement"); await waitFor("document.querySelector('.forge-proposal')"); await click("Accept proposal");
+  await waitFor("document.querySelector('.delivery-initiative h3')?.textContent.includes('clarified')"); check(true, "Refinement proposal and acceptance retained");
+  await navigate("/account"); await fill("Display name", "Alice Updated"); await click("Save profile");
+  await waitFor("document.querySelector('[role=status]')?.textContent.includes('Profile saved')");
+  await navigate("/"); check(await evaluate("document.querySelector('.auth-session').innerText.includes('Alice Updated')"), "Profile persists after navigation");
+  check((await api("/auth/admin/users")).status === 403, "Ordinary account cannot access admin directory");
+  await click("Sign out"); await waitFor("location.pathname === '/login'");
+  await navigate("/account", "/login"); check(true, "Protected account screen denies a logged-out session");
+  await signup("bob@example.test", "Bob"); await login("bob@example.test"); await waitFor("location.pathname === '/' && document.querySelector('.story-forge')");
+  check((await api("/story-agent/runs")).data.runs.length === 0, "History isolated between accounts");
+  check((await api("/story-agent/projects")).data.projects.length === 0, "Projects isolated between accounts");
+  check((await api(`/story-agent/runs/${run.runId}`)).status === 404, "Cross-user IDOR read rejected");
+  check((await api(`/story-agent/runs/${run.runId}`, "DELETE")).status === 404, "Cross-user IDOR deletion rejected");
+  check((await api("/auth/profile", "PATCH", { displayName: "Bob", role: "admin" })).status === 400, "Frontend role escalation rejected");
+  await click("Sign out"); await waitFor("location.pathname === '/login'"); await navigate("/forgot-password");
+  await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Email", "alice@example.test"); await click("Send reset email"); await waitFor("document.querySelector('[role=status]')?.textContent.includes('eligible')");
+  const reset = await mail("alice@example.test"); await navigate(`/reset-password#token=${reset}`, "/reset-password");
+  const replacement = "Another browser journey unique password!"; await fill("Password", replacement); await click("Save new password");
+  await waitFor("document.querySelector('[role=status]')?.textContent.includes('Password reset')");
+  check((await api("/auth/reset-password", "POST", { token: reset, password: replacement })).status === 400, "Reset token replay rejected in browser");
+  await login("alice@example.test"); await waitFor("document.querySelector('[role=alert]')?.textContent.includes('invalid')"); check(true, "Old password rejected after reset");
+  await fill("Password", replacement); await click("Sign in"); await waitFor("location.pathname === '/' && document.querySelector('.story-forge')");
+  check((await api("/story-agent/runs")).data.runs.length === 1, "Account history survives password reset");
+  await evaluate("[...document.querySelectorAll('.forge-nav__content button')].find(el => el.textContent.includes('Story vault')).click()");
+  await waitFor("document.querySelector('.forge-history-entry__delete')");
+  await evaluate("document.querySelector('.forge-history-entry__delete').click()"); await waitFor("document.querySelector('[role=alertdialog]')");
+  await click("Cancel"); await waitFor("!document.querySelector('[role=alertdialog]')");
+  check((await api("/story-agent/runs")).data.runs.length === 1, "Cancel preserves the history record");
+  await evaluate("document.querySelector('.forge-history-entry__delete').click()"); await click("Delete entry");
+  await waitFor("!document.querySelector('.forge-history-entry') && !document.querySelector('[role=alertdialog]')");
+  check((await api(`/story-agent/runs/${run.runId}`)).status === 404, "Owner deletes an individual record through the vault confirmation");
+  check((await api("/story-agent/runs")).data.runs.length === 0, "Deletion persists in the owner's vault");
+  for (const width of [1440, 390]) {
+    await navigate("/account"); await send("Emulation.setDeviceMetricsOverride", { width, height: 1100, deviceScaleFactor: 1, mobile: width < 700 });
+    check(!(await evaluate("document.documentElement.scrollWidth > innerWidth")), `Account layout fits ${width}px`);
+    await writeFile(`.repo-cache/phase5-account-${width}.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  }
+  await click("Sign out all sessions"); await waitFor("location.pathname === '/login'");
+  check((await api("/story-agent/runs")).status === 401, "Sign out all sessions invalidates browser access");
+  check(exceptions.length === 0, "No browser JavaScript exceptions");
+  console.log(`PASS: ${assertions} browser assertions covering signup, verification, login, reset, logout, cookies, ownership, projects, generation, review, impact, refinement and responsive layouts.`);
+} catch (error) {
+  await writeFile(".repo-cache/phase5-browser-failure.json", JSON.stringify({ pathname: await evaluate("location.pathname"), text: await evaluate("document.body.innerText"), exceptions, requests }, null, 2));
+  await writeFile(".repo-cache/phase5-browser-failure.png", Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  throw error;
+} finally { await send("Page.close").catch(() => undefined); socket.close(); }

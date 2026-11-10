@@ -24,3 +24,4 @@ export type {
 } from "./api/index.js";
 export type { StoryAgentProject, StoryAgentProjectInput, StoryAgentProjectRules } from "./api/index.js";
 export type { StoryAgentAnalysis, StoryAgentArtifactReference, StoryAgentIntelligenceFinding } from "./api/index.js";
+export type { AccountRole, AccountUser, AccountSession } from "./api/index.js";

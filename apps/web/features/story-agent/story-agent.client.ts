@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { authenticatedFetch } from "@/features/auth/public";
 import type { StoryAgentProject, StoryAgentProjectInput } from "@workspace/types";
 import { projectSchema } from "./story-agent.projects";
 import { analysisSchema } from "./story-agent.intelligence";
@@ -209,7 +210,7 @@ const request = async (fetcher: Fetch, url: string, init?: RequestInit): Promise
   return payload;
 };
 
-export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = fetch) => {
+export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = authenticatedFetch) => {
   const endpoint = `${baseUrl.replace(/\/$/, "")}/story-agent/runs`;
 
   return {

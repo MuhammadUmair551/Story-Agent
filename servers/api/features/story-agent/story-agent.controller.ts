@@ -19,7 +19,7 @@ import { presentAnalysisFreshness } from "./story-agent.findings.controller.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult> }>;
-type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; capacity: StoryAgentCapacity; clock: Clock; projects?: StoryAgentProjectRepository; createRunId?: () => string }>;
+type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; capacity: StoryAgentCapacity; clock: Clock; projects?: StoryAgentProjectRepository; createRunId?: () => string; serializeQueueWrite?: QueueWriteGate }>;
 type JsonResponse = Pick<Response, "json" | "status">;
 
 const toIso = (value: number): string => new Date(value).toISOString();
@@ -77,20 +77,26 @@ const presentRun = (stored: StoryAgentRunDocument): StoryAgentRunDocument => {
   return { ...run, plan, quality: explainQuality(plan, validatePlan(plan, [], 10), run.projectRules) };
 };
 
-export const createStoryAgentController = ({ repository, service, capacity, clock, projects, createRunId = randomUUID }:
-  ControllerDependencies) => {
-  let queueWriteTail: Promise<void> = Promise.resolve();
-  const saveQueuedRun = async ({ input, pipeline, runId, now }: QueueWrite): Promise<boolean> => {
+export type QueueWriteGate = <T>(write: () => Promise<T>) => Promise<T>;
+export const createQueueWriteGate = (): QueueWriteGate => {
+  let tail: Promise<void> = Promise.resolve();
+  return async (write) => {
     let release: (() => void) | undefined;
-    const previous = queueWriteTail;
-    queueWriteTail = new Promise<void>((resolve) => { release = resolve; });
+    const previous = tail;
+    tail = new Promise<void>((resolve) => { release = resolve; });
     await previous;
-    try {
+    try { return await write(); } finally { release?.(); }
+  };
+};
+
+export const createStoryAgentController = ({ repository, service, capacity, clock, projects, createRunId = randomUUID, serializeQueueWrite = createQueueWriteGate() }:
+  ControllerDependencies) => {
+  const saveQueuedRun = async ({ input, pipeline, runId, now }: QueueWrite): Promise<boolean> =>
+    await serializeQueueWrite(async () => {
       if (await repository.countQueuedRuns() >= 20) return false;
       await withStorySpan("story_agent.run.persist", { "story_agent.status": pipeline.status }, async () => { await repository.saveRun(runDocument(runId, input, pipeline, now)); });
       return true;
-    } finally { release?.(); }
-  };
+    });
   return {
   deleteRun: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
     try {

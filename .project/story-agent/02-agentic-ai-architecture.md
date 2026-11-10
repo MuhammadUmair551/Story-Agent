@@ -1,6 +1,31 @@
 # Story Agent architecture — v0.5 final
 
-Status: implemented, reliability-fixed, and verified against repository files on 2026-10-21.
+Phase 5 adds server-managed authentication and account ownership to the existing pipeline.
+The detailed security model, rollout requirements and verification scope are in
+[11-authentication.md](11-authentication.md). Earlier pipeline descriptions below remain
+applicable; all application APIs now pass through the following authentication boundary.
+
+```text
+Browser -> Next /api/{auth,story-agent}/... -> Express authentication controller
+                                               | Mongo sessions / verified user
+                                               v
+                                  Story Agent routes -> owner-scoped persistence
+                                               | shared provider budgets / queue
+                                               v
+                                      Existing generation/review pipeline
+```
+
+The browser uses same-origin HttpOnly cookies. Next forwards only the session cookie,
+CSRF token, content type, origin and request correlation header to the configured API.
+The API derives ownership from a verified session and applies it to every project, run,
+draft, refinement, analysis and decision read/write. Anonymous historical data remains
+stored but quarantined. Admin privileges authorize an account directory, never a bypass
+of Story Agent ownership. Signup cannot grant privileges; explicit offline role changes
+invalidate existing sessions. No authentication infrastructure is duplicated in the web app.
+
+Provider concurrency, queue admission and model budgets remain shared. The existing
+submission window is keyed by authenticated owner rather than the proxy's socket address.
+The queue processes only owned records and retains ownership when saving drafts.
 
 Repository rules in `AGENTS.md`, `CLAUDE.md`, `architecture.yaml`, and `.agent/` remain authoritative. Two referenced source documents (`01-*` and `03-*`) were not present in `.project/story-agent/` during this review; this document does not infer their contents.
 

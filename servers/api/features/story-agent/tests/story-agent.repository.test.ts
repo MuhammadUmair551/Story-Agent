@@ -23,6 +23,7 @@ void test("saves, retrieves, updates, lists, and indexes runs", async () => {
   assert.deepEqual(persistence.indexes, [
     "story_agent_runs:runId:true",
     "story_agent_runs:createdAt:undefined",
+    "story_agent_runs:ownerId,createdAt:undefined",
     "story_agent_runs:status,nextAttemptAt,lockedUntil,createdAt:undefined",
     "story_agent_drafts:runId:true"
   ]);

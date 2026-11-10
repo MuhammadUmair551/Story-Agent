@@ -1,7 +1,8 @@
-import { Router } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import type { Logger } from "@workspace/logging";
 import type { MongoPersistence } from "../../../integrations/index.js";
 import { createStoryAgentController } from "../story-agent.controller.js";
+import type { QueueWriteGate } from "../story-agent.controller.js";
 import type { StoryAgentCapacity } from "../story-agent.capacity.js";
 import type { StoryAgentRepository } from "../story-agent.repository.js";
 import type { StoryAgentPipelineResult, StoryAgentPipelineInput } from "../story-agent.service.js";
@@ -15,24 +16,30 @@ import { createComparisonPageController, createFindingDecisionController } from 
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult>; analyze?: (input: IntelligenceInput) => Promise<StoryAgentIntelligenceResult> }>;
-export type StoryAgentRouteDependencies = Readonly<{ db: MongoPersistence; logger: Logger; clock: Clock; repository: StoryAgentRepository; projects: StoryAgentProjectRepository; reviews: StoryAgentIntelligenceRepository; service: Service; capacity: StoryAgentCapacity }>;
+export type StoryAgentRouteDependencies = Readonly<{ db: MongoPersistence; logger: Logger; clock: Clock; repository: StoryAgentRepository; projects: StoryAgentProjectRepository; reviews: StoryAgentIntelligenceRepository; service: Service; capacity: StoryAgentCapacity; serializeQueueWrite?: QueueWriteGate }>;
 
-export const createStoryAgentRoutes = ({ repository, projects, reviews, service, capacity, clock }: StoryAgentRouteDependencies): Router => {
-  const router = Router();
+const handlers = ({ repository, projects, reviews, service, capacity, clock, serializeQueueWrite }: StoryAgentRouteDependencies) => {
   const projectController = createProjectController(projects, clock.now);
-  const controller = createStoryAgentController({ repository, service, capacity, clock, projects });
-  router.get("/story-agent/projects", projectController.list);
-  router.post("/story-agent/projects", projectController.create);
-  router.put("/story-agent/projects/:projectId", projectController.update);
-  router.delete("/story-agent/projects/:projectId", projectController.remove);
-  router.post("/story-agent/runs", controller.createRun);
-  router.get("/story-agent/runs", controller.listRuns);
-  router.get("/story-agent/runs/:id", controller.getRun);
-  router.get("/story-agent/runs/:id/comparisons", createComparisonPageController(repository, reviews));
-  router.delete("/story-agent/runs/:id", controller.deleteRun);
-  router.post("/story-agent/runs/:id/refinements", controller.proposeRefinement);
-  router.post("/story-agent/runs/:id/refinements/:proposalId/decision", controller.decideRefinement);
-  router.post("/story-agent/runs/:id/analyses", createIntelligenceController({ repository, reviews, capacity, analyze: service.analyze, now: clock.now }));
-  router.post("/story-agent/runs/:id/analyses/:analysisId/findings/:findingId/decision", createFindingDecisionController(repository, reviews, clock.now));
+  const controller = createStoryAgentController({ repository, service, capacity, clock, projects, ...(serializeQueueWrite ? { serializeQueueWrite } : {}) });
+  return { ...controller, listProjects: projectController.list, createProject: projectController.create, updateProject: projectController.update, deleteProject: projectController.remove,
+    comparisons: createComparisonPageController(repository, reviews), analyze: createIntelligenceController({ repository, reviews, capacity, analyze: service.analyze, now: clock.now }), findingDecision: createFindingDecisionController(repository, reviews, clock.now) };
+};
+
+export const createStoryAgentRoutes = (dependencies: StoryAgentRouteDependencies, resolve?: (request: Request) => StoryAgentRouteDependencies): Router => {
+  const router = Router(); const shared = handlers(dependencies);
+  const handle = (key: keyof typeof shared): RequestHandler => (request, response, next) => (resolve ? handlers(resolve(request)) : shared)[key](request, response, next);
+  router.get("/story-agent/projects", handle("listProjects"));
+  router.post("/story-agent/projects", handle("createProject"));
+  router.put("/story-agent/projects/:projectId", handle("updateProject"));
+  router.delete("/story-agent/projects/:projectId", handle("deleteProject"));
+  router.post("/story-agent/runs", handle("createRun"));
+  router.get("/story-agent/runs", handle("listRuns"));
+  router.get("/story-agent/runs/:id", handle("getRun"));
+  router.get("/story-agent/runs/:id/comparisons", handle("comparisons"));
+  router.delete("/story-agent/runs/:id", handle("deleteRun"));
+  router.post("/story-agent/runs/:id/refinements", handle("proposeRefinement"));
+  router.post("/story-agent/runs/:id/refinements/:proposalId/decision", handle("decideRefinement"));
+  router.post("/story-agent/runs/:id/analyses", handle("analyze"));
+  router.post("/story-agent/runs/:id/analyses/:analysisId/findings/:findingId/decision", handle("findingDecision"));
   return router;
 };
