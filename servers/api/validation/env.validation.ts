@@ -18,6 +18,7 @@ export const apiEnvironmentSchema = z.object({
   API_HOST: z.string().min(1),
   API_PORT: z.coerce.number().int().min(1).max(65_535),
   WEB_ORIGIN: webOriginsSchema,
+  AUTH_PUBLIC_ORIGIN: z.string().optional(),
   MONGODB_URI: z.string().min(1).optional(),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]),
   LLM_PROVIDERS: z.string().min(1).optional(),

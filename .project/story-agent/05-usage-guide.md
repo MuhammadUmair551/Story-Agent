@@ -4,6 +4,12 @@
 
 Use a local ignored `.env`; never commit keys. Configure API baseline values (`NODE_ENV`, `API_HOST`, `API_PORT`, `WEB_ORIGIN`, `LOG_LEVEL`), `MONGODB_URI`, and one complete provider.
 
+Phase 5 requires `AUTH_PUBLIC_ORIGIN` on the API host, included in the exact `WEB_ORIGIN`
+allowlist. No outbound email service or custom domain is required. See
+[authentication setup and rollout](11-authentication.md) before starting the API.
+The web app keeps `NEXT_PUBLIC_API_BASE_URL` as its upstream API address; browser
+requests now use the same-origin `/api` proxy. No secrets belong in `NEXT_PUBLIC_*`.
+
 ```dotenv
 LLM_PROVIDERS=groq
 LLM_GROQ_BASE_URL=https://provider.example.com/v1
@@ -24,6 +30,12 @@ OTEL_SERVICE_NAME=story-agent-api
 ```
 
 MongoDB must permit creation of `story_agent_runs` and `story_agent_drafts` collections/indexes.
+It must also permit project and authentication collections, unique indexes and TTL indexes.
+Open `/signup`, then sign in immediately at `/login`. The workspace and `/account` require
+an authenticated session. Account settings support display name changes, password changes
+requiring the current password, sign out and sign out from all sessions. Password changes
+revoke every session. Email is an unverified login identifier; no email recovery is available.
+Store your password securely. Existing anonymous history stays quarantined.
 
 ## Commands
 
@@ -54,11 +66,18 @@ The widget is the bottom-right Gecko launcher; Ctrl+J opens and focuses it. Ente
 ## API
 
 ```bash
-curl -X POST http://127.0.0.1:4000/story-agent/runs \
-  -H "content-type: application/json" \
+# Use a cookie jar from a completed authenticated API login. For each unsafe request,
+# use the matching csrfToken from GET /auth/session and the exact allowed web Origin.
+curl -X POST http://127.0.0.1:4000/story-agent/runs -b cookies.txt \
+  -H "content-type: application/json" -H "Origin: http://localhost:3000" \
+  -H "X-CSRF-Token: REPLACE_WITH_SESSION_CSRF" \
   -d '{"requirement":"As a content manager, I want a post editor with title, body, and publish action so that I can publish articles."}'
-curl http://127.0.0.1:4000/story-agent/runs/REPLACE_WITH_RUN_ID
+curl -b cookies.txt http://127.0.0.1:4000/story-agent/runs/REPLACE_WITH_RUN_ID
 ```
+
+Unauthenticated requests receive `401`; missing/mismatched CSRF or disallowed origins
+receive `403`. Other accounts' resource IDs return `404`. Keep cookie jars private and
+ignored. The browser handles cookies and CSRF automatically; never use localStorage tokens.
 
 Draft/questions return `200`; queued returns `202`; failed returns `500`; validation errors return `400`; a full queue returns `503`; and a per-instance request limit returns `429` with `retryAfterMs`. `queued` is not a draft—wait for worker retry and query the run again.
 
@@ -90,11 +109,18 @@ and restart the API to apply it.
 Do not change the frontend API URL or allow all `*.vercel.app` sites. Unlisted origins remain
 blocked by browser CORS checks. Verify the `OPTIONS /story-agent/runs` response echoes the
 request's trusted origin and allows `Content-Type` and `X-Request-Id` before testing generation.
-The frontend calls Render directly; its generation requests do not run as Vercel functions.
+Phase 5 browser requests go through Next's same-origin `/api` route, which forwards the
+trusted web Origin to Render. Keep the existing exact API allowlist. The canonical
+`AUTH_PUBLIC_ORIGIN` must be an allowed HTTPS origin in production; a free Vercel hostname
+is sufficient. The Next host must support
+the existing generation duration; its proxy bounds upstream requests at 110 seconds and
+does not extend a hosting platform's function limit.
 
 | Symptom | Action |
 |---|---|
-| API routes 404 | Configure `MONGODB_URI` and restart; routes compose only with persistence. |
+| API routes unavailable | Configure MongoDB and all authentication environment values; startup fails closed on invalid auth configuration. |
+| Forgotten password | Email recovery is unavailable. Change the password from an active session only with the current password; no identity shortcut is supported. |
+| `401` / `403` | Sign in again, refresh the CSRF session and verify the exact web Origin. |
 | Immediate `Failed to fetch` on a deployment URL | Check its exact browser origin against the API's `WEB_ORIGIN`; a 204 preflight with a different `Access-Control-Allow-Origin` is rejected before generation. |
 | Provider unavailable/queued | Check complete provider vars, profile names, quota, and cooldown. |
 | Empty history | Check Mongo reachability and `NEXT_PUBLIC_API_BASE_URL`. |

@@ -16,6 +16,7 @@ import { createMemoryPersistence } from "./story-agent.memory.js";
 import { createStoryAgentFeature } from "../index.js";
 import { createApp } from "../../../bootstrap/index.js";
 import { createApiConfig, readApiEnvironment } from "../../../config/index.js";
+import { createAuthFeature } from "../../auth/public.js";
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 const story = { title: "A writer creates stories", intent: "Plan", epic: "Planning", size: "S" as const, acceptanceCriteria: ["Stories appear"], states: [], dependsOn: [], openQuestions: [], sliceRationale: "Proves creation." };
@@ -196,15 +197,21 @@ void test("generation CORS accepts each configured exact origin and preserves HT
   const config = createApiConfig(readApiEnvironment({ NODE_ENV: "test", API_HOST: "127.0.0.1", API_PORT: "4000", LOG_LEVEL: "silent", WEB_ORIGIN: `${production},${deployment}` }));
   let calls = 0; let pipeline = result("draft");
   const saved: unknown[] = [];
-  const app = createApp({ config, logger, persistence: db, storyAgentRouteDependencies: {
+  const authMemory = createMemoryPersistence();
+  const authentication = await createAuthFeature({ db: authMemory.db, config: { secure: false, publicOrigin: production }, origins: [production, deployment] });
+  const credentials = { email: "cors@example.test", displayName: "CORS test", password: "A sufficiently long unique password!" };
+  await authentication.service.signup(credentials);
+  const user = await authentication.service.login(credentials.email, credentials.password); const session = await authentication.service.newSession(user);
+  const dependencies = {
     db, ...additionalRepositories(), logger, clock: { now: () => 0 }, repository: createRepository(saved),
     service: { run: async () => { calls++; return pipeline; } }, capacity: capacity()
-  } });
+  };
+  const app = createApp({ config, logger, persistence: db, authentication, storyAgentRouteDependencies: dependencies, storyAgentScope: () => dependencies });
   const server = createServer(app);
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); assert.ok(address && typeof address === "object");
   const endpoint = `http://127.0.0.1:${String(address.port)}/story-agent/runs`;
-  const headers = (origin: string) => ({ Origin: origin, "Content-Type": "application/json", "X-Request-Id": "smoke2-generation" });
+  const headers = (origin: string) => ({ Origin: origin, "Content-Type": "application/json", "X-Request-Id": "smoke2-generation", Cookie: `story_session=${session.token}`, "X-CSRF-Token": session.csrfToken });
   const requirement = "Build an e-commerce platform where customers can browse products, add items to cart, and place orders. Admins can manage products and track orders.";
   try {
     for (const origin of [production, deployment]) {

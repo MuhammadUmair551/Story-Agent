@@ -10,6 +10,7 @@ export const readApiEnvironment = (
   API_HOST: source.API_HOST,
   API_PORT: source.PORT || source.API_PORT,
   WEB_ORIGIN: source.WEB_ORIGIN,
+  AUTH_PUBLIC_ORIGIN: source.AUTH_PUBLIC_ORIGIN,
   MONGODB_URI: source.MONGODB_URI,
   LOG_LEVEL: source.LOG_LEVEL,
   LLM_PROVIDERS: source.LLM_PROVIDERS,

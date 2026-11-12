@@ -7,12 +7,16 @@ import { createApp, createServer, createShutdown } from "./bootstrap/index.js";
 import { createApiConfig, readApiEnvironment } from "./config/index.js";
 import { apiRuntime } from "./constants/index.js";
 import { createLlmGateway, createMongoDbIntegration } from "./integrations/index.js";
+import { createAuthFeature, readAuthConfiguration } from "./features/auth/index.js";
 import { createStoryAgentFeature } from "./features/story-agent/index.js";
 
 const startupLogger = createLogger({ service: apiRuntime.serviceName, level: "info", format: process.env.NODE_ENV === "production" ? "json" : "pretty" });
 let config: ReturnType<typeof createApiConfig>;
+let authConfig: ReturnType<typeof readAuthConfiguration> | undefined;
 try {
-  config = createApiConfig(readApiEnvironment());
+  const environment = readApiEnvironment();
+  config = createApiConfig(environment);
+  authConfig = config.mongodbUri ? readAuthConfiguration(environment) : undefined;
 } catch (error: unknown) {
   startupLogger.error("API configuration validation failed.", {
     errorCode: "configuration_invalid",
@@ -44,7 +48,8 @@ const storyAgent = config.mongodbUri
   ? createStoryAgentFeature({ db: database, llm, logger, clock: { now: Date.now }, queueIntervalMs: config.queueIntervalMs, maxConcurrentRuns: config.storyAgentMaxConcurrentRuns, maxRequestsPerWindow: config.storyAgentMaxRequestsPerWindow, requestWindowMs: config.storyAgentRequestWindowMs, maxTrackedClients: config.storyAgentMaxTrackedClients })
   : undefined;
 if (storyAgent) await storyAgent.ensureIndexes();
-const app = createApp({ config, logger, persistence: database, ...(storyAgent ? { storyAgentRouteDependencies: storyAgent.routeDependencies } : {}) });
+const authentication = authConfig ? await createAuthFeature({ db: database, config: authConfig, origins: config.webOrigin.split(",") }) : undefined;
+const app = createApp({ config, logger, persistence: database, authentication, ...(storyAgent ? { storyAgentRouteDependencies: storyAgent.routeDependencies, storyAgentScope: storyAgent.scope } : {}) });
 const server = createServer({ app, config, logger });
 
 const shutdown = createShutdown({ database, logger, server });

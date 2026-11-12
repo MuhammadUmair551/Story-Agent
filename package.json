@@ -12,7 +12,7 @@
     "dev": "node codebase/cli/repo.mjs run dev --concurrency 2",
     "build": "node codebase/cli/repo.mjs build --concurrency 2",
     "repo:test": "node codebase/cli/repo.mjs test",
-    "test:control-plane": "node --test codebase/**/*.test.mjs",
+    "test:control-plane": "node --test \"codebase/**/*.test.mjs\"",
     "test:units": "node codebase/cli/repo.mjs test --concurrency 2",
     "lint": "node codebase/cli/repo.mjs run lint --concurrency 2",
     "typecheck": "node codebase/cli/repo.mjs run typecheck --concurrency 2",

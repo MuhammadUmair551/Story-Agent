@@ -7,6 +7,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@workspace/ui";
 import { QualityReview } from "./quality-review";
+import { SessionControls } from "@/features/auth/public";
 import { ProjectRules } from "./project-rules";
 import type { StoryAgentProject } from "@workspace/types";
 import { deleteConfirmedHistoryEntry } from "../story-agent.history";
@@ -137,7 +138,7 @@ export const StoryForge = ({ apiBaseUrl }: StoryForgeProps): React.JSX.Element =
         <button className={view === "forge" ? "is-active" : ""} type="button" onClick={() => { setView("forge"); setIsMobileMenuOpen(false); }}><WandSparkles /> Story forge</button>
         <button className={view === "archive" ? "is-active" : ""} type="button" onClick={() => { setView("archive"); setIsMobileMenuOpen(false); }}><Archive /> Story vault <span>{history.length}</span></button>
       </div>
-      <div className="forge-nav__footer"><div className="forge-avatar">A</div><div><b>Adeel</b><small>Story architect</small></div><ChevronRight /></div>
+      <div className="forge-nav__footer"><SessionControls /></div>
     </aside>
     <section className="forge-main">
       <header className="forge-topbar"><button className="forge-menu" type="button" aria-label="Open navigation" onClick={() => setIsMobileMenuOpen(true)}><Menu /></button><div className="forge-breadcrumb"><span>Workspace</span><ChevronRight /><b>{view === "forge" ? "Story forge" : "Story vault"}</b></div><button className="forge-new" type="button" onClick={startFresh}><Plus /> New story</button></header>

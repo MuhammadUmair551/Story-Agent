@@ -22,3 +22,4 @@ export type {
 } from "./story-agent/index.js";
 export type { StoryAgentProject, StoryAgentProjectInput, StoryAgentProjectRules } from "./story-agent/index.js";
 export type { StoryAgentAnalysis, StoryAgentArtifactReference, StoryAgentIntelligenceFinding } from "./story-agent/index.js";
+export type { AccountRole, AccountUser, AccountSession } from "./auth/index.js";

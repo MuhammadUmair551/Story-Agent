@@ -9,7 +9,7 @@ export const createCorsMiddleware = ({ origin }: { origin: string }): RequestHan
       response.setHeader("Access-Control-Allow-Origin", requestOrigin);
     }
     response.vary("Origin");
-    response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id");
+    response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id, X-CSRF-Token");
     response.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
     response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     if (request.method === "OPTIONS") {
