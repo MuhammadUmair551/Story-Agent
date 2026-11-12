@@ -40,9 +40,12 @@ void test("production cookies, CSRF checks, strict role inputs, and missing auth
   assert.equal((await client.request("/auth/signup", "POST", { ...input, password: "weak" })).status, 400);
 });
 
-void test("password change requires current credentials, CSRF and strict input, then revokes every session", async (context) => {
+void test("password change requires current credentials, revokes that account's sessions and preserves another account", async (context) => {
   const fixture = await authFixture(); context.after(fixture.close); const { client, password } = await signupAccount(fixture, "change@example.test");
   const second = browserClient(fixture); await second.request("/auth/session"); await second.request("/auth/login", "POST", { email: "change@example.test", password });
+  const unaffected = await signupAccount(fixture, "unaffected@example.test");
+  const unaffectedUser = await fixture.authRepository.byEmail("unaffected@example.test"); assert.ok(unaffectedUser);
+  assert.equal((await unaffected.client.request("/story-agent/runs")).status, 200);
   const body = { currentPassword: password, newPassword: "Another sufficiently long password!" };
   assert.equal((await browserClient(fixture).request("/auth/change-password", "POST", body)).status, 401);
   assert.equal((await client.request("/auth/change-password", "POST", body, { "X-CSRF-Token": "wrong" })).status, 403);
@@ -55,6 +58,8 @@ void test("password change requires current credentials, CSRF and strict input, 
   const changed = await client.request("/auth/change-password", "POST", body); assert.equal(changed.status, 200); assert.match(changed.headers.get("set-cookie") ?? "", /Expires=Thu, 01 Jan 1970/);
   assert.equal((await second.request("/story-agent/runs")).status, 401);
   assert.equal((await client.request("/story-agent/runs")).status, 401);
+  assert.equal((await unaffected.client.request("/story-agent/runs")).status, 200);
+  assert.equal((await fixture.authRepository.user(unaffectedUser.userId))?.version, unaffectedUser.version);
   await client.request("/auth/session");
   assert.equal((await client.request("/auth/login", "POST", { email: "change@example.test", password })).status, 401);
   assert.equal((await client.request("/auth/login", "POST", { email: "change@example.test", password: body.newPassword })).status, 200);

@@ -102,8 +102,10 @@ recovery. An email address alone never authorizes the operator to change an acco
 
 Keep secret values in Render or ignored `servers/api/.env`, never in public frontend vars.
 No mail-specific secrets are required. The email adapter, outbox encryption, action-token
-handling and delivery/retry worker have been removed. No Resend SDK was installed, so no
-package or lockfile changes are necessary.
+handling and delivery/retry worker have been removed. No Resend SDK was installed, so
+email removal itself needs no package changes. A separate security follow-up raises the
+Mongoose minimum to 9.11.4 for GHSA-gg4r-jv3p-qx3c and GHSA-8332-j7wj-wjw4; no security
+exception is added and the existing Mongo integration remains in place.
 
 | Setting | Host and requirement |
 |---|---|
@@ -136,6 +138,123 @@ createdAt history ordering, the status/nextAttemptAt/lockedUntil/createdAt queue
 and `ownerId:1,createdAt:-1` run-history ordering.
 Index failure prevents startup. Confirm the actual production database has all required
 indexes; an unrelated local database audit is not production evidence.
+
+Index creation is an application initialization responsibility, not a request to manually
+provision production collections. After connecting MongoDB, startup ensures Story indexes,
+then the auth feature ensures its six indexes, before opening the HTTP listener. MongoDB
+creates an absent collection when its first index is created. Missing auth collections
+before the first Phase 5 startup therefore do not establish a defect. Prove initialization
+and permissions on an isolated staging database first; verify production bootstrap only
+during a separately approved rollout. No ownership/data migration is performed.
+
+### Minimum isolated HTTPS staging setup (approval required)
+
+No staging infrastructure is currently available. HTTPS/MongoDB staging smoke tests are
+**NOT RUN**; existing memory-fixture/browser results are not substitutes. The following
+setup is a plan only; it does not authorize resources, environment edits or deployment.
+
+1. **Atlas:** reuse the independently verified existing cluster only if its current tier,
+   quota and account policy allow a separate database without cost. Proposed staging-only
+   name: `story_agent_auth_staging` (not the production `test` database or empty `Agent`
+   database). Use a new staging database user limited to this database, with CRUD and index
+   initialization privileges; no production database privileges. Store credentials privately
+   in the staging service. Set an explicit staging database path and preserve the verified
+   authentication source. Do not infer cluster identity from matching replica-set names.
+   Do not copy production users, sessions or history into staging, or create indexes by hand.
+2. **Render:** after approval, create one separate staging Node Web Service, using a Free
+   instance only if current account allowances permit it; otherwise stop for a cost decision.
+   Check shared free-instance hours first so staging cannot exhaust production's allowance.
+   Keep the production service and its integrations unchanged. Select the authentication
+   branch and the reviewed commit. Reuse repository-root build/start conventions:
+   `corepack pnpm install --frozen-lockfile --prod=false && node codebase/cli/repo.mjs run api:build`
+   and `corepack pnpm --dir servers/api start`. Use a compatible existing Node runtime,
+   `NODE_ENV=production`, `API_HOST=0.0.0.0`, Render-supplied PORT and an existing valid
+   LOG_LEVEL. Set only the staging URI and private provider configuration on this service.
+   Do not inherit a production MongoDB environment group. Keep provider budgets bounded.
+   Configure only this new staging service for a controlled initial deployment; do not
+   disable or change auto-deploy on the existing production service.
+3. **Vercel:** after approval, reuse the existing project's Preview environment, scoped
+   specifically to `feat/story-agent-authentication`. Set its branch-scoped
+   `NEXT_PUBLIC_API_BASE_URL` to the staging Render HTTPS origin. Leave Production variables,
+   production branch and deployment integrations untouched. Confirm the stable preview
+   alias in Vercel; do not guess an alias or point the preview at production's backend.
+4. Set the staging API's AUTH_PUBLIC_ORIGIN to that exact HTTPS preview origin and WEB_ORIGIN
+   to the approved staging origin(s), with no wildcard. Keep production origins/settings
+   unchanged. Use hosting-provided HTTPS hostnames; no custom domain or mail service is needed.
+   Rebuild only the staging preview after its environment is set. Record the actual source
+   commit for both services. Review preview access protection without weakening it blindly.
+5. Start only the approved staging API against the new scoped database. Its normal bootstrap
+   creates the required Story/auth collections and indexes there. Use the existing read-only
+   verifier with the confirmed staging database context to inspect the resulting definitions.
+   Never run production bootstrap or manually modify production indexes to satisfy staging.
+6. Use independent A1/A2/B1 browser profiles and dedicated synthetic accounts to execute
+   signup/immediate login, logout, persistence, cookie flags, password-change rejection,
+   all-session revocation for A while B stays active, ownership/IDOR, CSRF/origin rejection,
+   removed routes and every Story Agent flow. Seed anonymous-history examples only in
+   staging, through a separately approved fixture operation, not by modifying production.
+   Record only sanitized statuses. Do not export HARs, passwords, cookies or session tokens.
+7. Observe idle expiry after 30 minutes, absolute expiry after eight hours with activity,
+   and natural TTL cleanup; do not shorten security timeouts or claim unexecuted checks.
+   Free backend sleep/cold starts can delay queue work. Distinguish that from an auth defect
+   and from tests requiring continuous activity. No always-on or paid resource is assumed.
+
+Before any feature push or merge, verify the actual production-linked branches and auto-
+deploy settings. A merge can immediately trigger production when integrations track main.
+Do not push blindly if the production Render service might track the authentication branch.
+No deployment integration is disabled or changed by this plan.
+
+References: [Vercel environment scoping](https://vercel.com/docs/environment-variables),
+[Render deploy controls](https://render.com/docs/deploys),
+[Render free-instance limits](https://render.com/docs/free).
+
+### Current finalization evidence (2026-11-11)
+
+The Mongoose 9.11.4 security follow-up passed fresh `pnpm run validate`: 300 tests,
+zero failed/skipped, including all seven nested scanner tests. Architecture, lint,
+type checking, repository secret/dependency scanning and API/web production builds passed
+under the unchanged security policy. The extended password-change regression confirms
+that revoking A's sessions preserves B's session and account security version. A read-only
+adapter connect/ping with the updated dependency still selects the explicit local test
+database; no application writes or index operations were performed by that check.
+
+Read-only Render inspection confirms story-agent-api tracks main with auto-deploy on
+commit, Free runtime and PR previews disabled. Its live deployment reports commit
+72b729e2d944d414293f3695497cd9ad2f7c9cc0; application logs show MongoDB connected and API
+startup. These facts do not establish the effective URI, database identity, environment
+group values, provider readiness or Phase 5 initialization. The available integration
+does not expose a read-only environment-variable inventory. Do not infer those settings
+from successful startup or claim the authentication feature is deployed.
+
+On 2026-11-12, the owner confirmed in Vercel Settings that Production tracks main and
+confirmed Render remains on main with auto-deploy on commit. Publishing this follow-up
+to the existing authentication branch is approved; merging or changing production is not.
+Isolated HTTPS/MongoDB smoke tests remain NOT RUN. No staging resources/settings or
+production deployments were changed by this audit. Existing Edge browser evidence is from
+the earlier isolated memory fixture, not a new HTTPS staging run. Verify the resulting
+feature commit in PR CI after publishing; the earlier green run covers the previous head.
+
+### Controlled release and rollback
+
+After staging passes and owner approval is recorded, validate the exact squash commit
+message (including the 100-character body-line limit), then use the repository's squash
+merge strategy. Merge approval must explicitly cover the expected automatic production
+deployments when integrations track main. Confirm the actual linked branches and deployment
+ordering first; green PR CI does not establish those hosting settings.
+
+Before rollout, retain a private database backup and the previous frontend/API deployment
+identifiers and configuration. Agree an approved maintenance or traffic-control window
+for the authentication boundary change: an older frontend cannot authenticate to the new
+API, and the new frontend cannot use an older unauthenticated API. Coordinate backend
+initialization and frontend promotion rather than assuming independent auto-deploys finish
+in the desired order. Verify the resulting main commit, both deployed revisions, API/auth
+behavior, persistence and core generation before reopening normal traffic.
+
+Rollback must preserve authentication and owner enforcement. Once owned records exist,
+blindly reverting the API to pre-auth main against the same database can expose those
+records through formerly anonymous endpoints. Use an approved secure maintenance state
+or a compatible authenticated deployment while investigating; do not remove ownership,
+drop collections/indexes, restore production over live data, or make private records
+anonymous. A database restore or session-invalidation operation needs separate approval.
 
 ### Safe transition from the email-enabled branch
 
@@ -193,7 +312,7 @@ and [session management guidance](https://cheatsheetseries.owasp.org/cheatsheets
 
 ## Email-free revision file manifest
 
-Changes from authentication branch head `1167e3b` (36 tracked files).
+Historical email-free commit `bb9277c` changed 36 tracked files from branch head `1167e3b`.
 `M` means modified; `D` means removed source. Ignored build/test artifacts are excluded.
 
 ```text
