@@ -62,5 +62,31 @@ test("password change invalidates cached client identity and refreshes CSRF befo
   });
   assert.equal((await readAccountSession(true)).user?.userId, "reader"); await accountRequest("/change-password", { currentPassword: "A current fixture password!", newPassword: "A new long fixture password!" });
   await accountRequest("/profile", { displayName: "Reader" }, "PATCH");
-  assert.equal((await readAccountSession()).user, null); assert.equal(lookups, 2); assert.deepEqual(observed, ["1".repeat(43), "2".repeat(43)]);
+  assert.equal((await readAccountSession()).user, null); assert.equal(lookups, 3); assert.deepEqual(observed, ["2".repeat(43), "3".repeat(43)]);
+});
+
+test("login refreshes expired or cross-tab CSRF state before submitting credentials once", async (context) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: "https://web.example.test" } } });
+  context.after(() => { if (previous) Object.defineProperty(globalThis, "window", previous); else Reflect.deleteProperty(globalThis, "window"); });
+  let lookups = 0; let submissions = 0;
+  context.mock.method(globalThis, "fetch", (input: unknown, init?: RequestInit) => {
+    if (input === "/api/auth/session") { lookups++; return Promise.resolve(Response.json({ user: null, csrfToken: (lookups === 1 ? "old" : "new").repeat(16) })); }
+    submissions++;
+    assert.equal(new Headers(init?.headers).get("X-CSRF-Token"), "new".repeat(16));
+    assert.equal(init?.credentials, "same-origin");
+    return Promise.resolve(Response.json({ error: "Email or password is invalid." }, { status: 401 }));
+  });
+  await readAccountSession(true);
+  await assert.rejects(() => accountRequest("/login", { email: "reader@example.test", password: "A fixture password!" }), /invalid/);
+  assert.equal(lookups, 2); assert.equal(submissions, 1);
+});
+
+test("concurrent session refreshes share one cookie and CSRF bootstrap", async (context) => {
+  let resolve: ((response: Response) => void) | undefined; let calls = 0;
+  context.mock.method(globalThis, "fetch", () => { calls++; return new Promise<Response>((done) => { resolve = done; }); });
+  const first = readAccountSession(true); const second = readAccountSession(true);
+  assert.equal(first, second); assert.equal(calls, 1);
+  resolve?.(Response.json({ user: null, csrfToken: "safe-fixture-token".repeat(3) }));
+  assert.equal((await first).csrfToken, (await second).csrfToken);
 });

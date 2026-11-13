@@ -48,12 +48,20 @@ void test("reschedules providers-unavailable runs", async () => {
   assert.match(String((updates[0]?.extra as { nextAttemptAt?: string }).nextAttemptAt), /1970-01-01T00:02:00/);
 });
 
-void test("expires a run after five queue attempts", async () => {
+void test("expires a run only after five queue attempts have been processed", async () => {
   const updates: Array<{ status: string; extra: unknown }> = [];
-  const queue = createStoryAgentQueue({ repository: repository(queuedRun(5), updates), service: { run: async () => pipeline("draft") }, logger, clock: { now: () => 0 }, intervalMs: 120_000 });
+  const queue = createStoryAgentQueue({ repository: repository(queuedRun(6), updates), service: { run: async () => pipeline("draft") }, logger, clock: { now: () => 0 }, intervalMs: 120_000 });
   await queue.processNext();
   assert.equal(updates[0]?.status, "failed");
   assert.equal((updates[0]?.extra as { reason?: string }).reason, "expired");
+});
+
+void test("processes the fifth allowed attempt and clears stale queued failure fields on success", async () => {
+  const updates: Array<{ status: string; extra: unknown }> = [];
+  const queue = createStoryAgentQueue({ repository: repository(queuedRun(5), updates), service: { run: () => Promise.resolve(pipeline("draft")) }, logger, clock: { now: () => 0 }, intervalMs: 120_000 });
+  await queue.processNext(); assert.equal(updates[0]?.status, "draft");
+  assert.equal((updates[0]?.extra as { error: unknown }).error, null);
+  assert.equal((updates[0]?.extra as { reason: unknown }).reason, null);
 });
 
 void test("preserves generated stories and clarification questions when queued work resolves", async () => {
@@ -105,4 +113,19 @@ void test("does not overlap queue processing while a provider run is still pendi
 
   assert.equal(claims, 1);
   assert.equal(runs, 1);
+});
+
+void test("a draft persistence acknowledgement failure cannot overwrite valid output as failed and recovers without regeneration", async () => {
+  const updates: Array<{ status: string; extra: unknown }> = []; let saved = false; let calls = 0; let loseAcknowledgement = true;
+  const base = repository(queuedRun(), updates);
+  const queue = createStoryAgentQueue({
+    repository: { ...base,
+      getDraftByRun: () => Promise.resolve(saved ? { runId: "run-1", stories: [], createdAt: "2026-01-01T00:00:00.000Z" } : null),
+      saveDraft: () => { saved = true; return Promise.resolve(); },
+      updateRunStatus: async (id, status, extra) => { await base.updateRunStatus(id, status, extra); if (status === "draft" && loseAcknowledgement) { loseAcknowledgement = false; throw new Error("private-storage-diagnostic"); } }
+    }, service: { run: () => { calls++; return Promise.resolve(pipeline("draft")); } }, logger, clock: { now: () => 0 }, intervalMs: 120_000
+  });
+  await assert.rejects(() => queue.processNext());
+  assert.ok(saved); assert.equal(updates.some(update => update.status === "failed"), false);
+  await queue.processNext(); assert.equal(calls, 1); assert.equal(updates.at(-1)?.status, "draft");
 });

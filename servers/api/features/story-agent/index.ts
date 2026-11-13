@@ -36,6 +36,7 @@ export const createStoryAgentFeature = ({ db, llm, logger, clock, queueIntervalM
       span.setAttribute("story_agent.outcome", result.status);
       span.setAttribute("story_agent.attempt_count", result.attempts);
       recordGeneration(result.status, durationMs);
+      logger.info("Story Agent pipeline completed.", { status: result.status, reasonCode: result.reason ?? "none", providers: [...result.providers], attempts: result.attempts });
       return result;
     }, (result) => result.status);
   } });

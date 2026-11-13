@@ -2,8 +2,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { authFixture, browserClient, signupAccount, plan } from "./auth.fixture.js";
 import { hashPassword, verifyPassword } from "../auth.crypto.js";
+import { createAuthService } from "../auth.service.js";
+import { createAuthRepository } from "../auth.repository.js";
+import { createMemoryPersistence } from "../../../tests/memory-persistence.js";
 import type { StoryAgentProjectRules } from "@workspace/types";
 const rules: StoryAgentProjectRules = { glossary: [], roles: [], naming: [], rules: [], acceptanceCriteria: { format: "checklist", instructions: "", examples: [] } };
+
+void test("signup does not acknowledge success before durable user insertion completes", async () => {
+  const memory = createMemoryPersistence(); const repository = createAuthRepository(memory.db);
+  let release: (() => void) | undefined; let entered: (() => void) | undefined;
+  const wait = new Promise<void>(resolve => { release = resolve; });
+  const inserting = new Promise<void>(resolve => { entered = resolve; });
+  const service = await createAuthService({ repository: { ...repository, addUser: async user => { entered?.(); await wait; return await repository.addUser(user); } } });
+  let acknowledged = false;
+  const signup = service.signup({ email: "durable@example.test", displayName: "Durable", password: "A durable fixture password!" }).then(result => { acknowledged = true; return result; });
+  await inserting; assert.equal(acknowledged, false); assert.equal(await repository.byEmail("durable@example.test"), null);
+  release?.(); await signup; assert.ok(await repository.byEmail("durable@example.test"));
+  assert.equal((await service.login("durable@example.test", "A durable fixture password!")).email, "durable@example.test");
+});
 
 void test("password hashing uses independent salts and rejects incorrect values", async () => {
   const password = "A long independent password!"; const first = await hashPassword(password); const second = await hashPassword(password);
@@ -26,6 +42,9 @@ void test("signup normalizes email, conceals duplicate accounts and supports imm
   const oldCookie = client.cookie(); assert.equal((await client.request("/story-agent/runs")).status, 200);
   assert.equal((await client.request("/auth/logout", "POST")).status, 200);
   assert.equal((await client.request("/story-agent/runs", "GET", undefined, { Cookie: oldCookie })).status, 401);
+  const loggedOut = await client.request("/auth/session"); assert.equal(loggedOut.status, 200);
+  assert.equal((await loggedOut.json() as { user: unknown }).user, null);
+  assert.equal((await client.request("/story-agent/runs")).status, 401);
 });
 
 void test("production cookies, CSRF checks, strict role inputs, and missing authentication fail closed", async (context) => {

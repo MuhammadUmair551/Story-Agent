@@ -25,6 +25,7 @@ type JsonResponse = Pick<Response, "json" | "status">;
 const toIso = (value: number): string => new Date(value).toISOString();
 const queuedRetryDelayMs = 2 * 60 * 1_000;
 const queuedExpiryMs = 30 * 60 * 1_000;
+const rejectedProviderMessage = "No provider could accept this request. Check provider model availability, credentials and account limits.";
 const queuedByCapacity = (): StoryAgentPipelineResult => ({
   status: "queued",
   attempts: 0,
@@ -39,7 +40,7 @@ type QueueWrite = Readonly<{ input: StoryAgentPipelineInput; pipeline: StoryAgen
 
 const runDocument = (runId: string, input: StoryAgentPipelineInput, pipeline: StoryAgentPipelineResult, now: number): StoryAgentRunDocument => {
   const errorMessage = pipeline.status === "failed"
-    ? pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed."
+    ? pipeline.reason === "provider_rejected" ? rejectedProviderMessage : pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed."
     : pipeline.reason;
 
   return {
@@ -226,7 +227,8 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
         response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, questions: pipeline.questions ?? [], usage: pipeline.usage });
         return;
       }
-      response.status(HTTP_STATUS.internalServerError).json({ runId, status: pipeline.status, error: pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed.", quality: pipeline.quality, usage: pipeline.usage });
+      const unavailable = pipeline.reason === "provider_rejected" || pipeline.reason === "no_provider_configured";
+      response.status(unavailable ? HTTP_STATUS.serviceUnavailable : HTTP_STATUS.internalServerError).json({ runId, status: pipeline.status, reason: pipeline.reason, error: pipeline.reason === "provider_rejected" ? rejectedProviderMessage : pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed.", quality: pipeline.quality, usage: pipeline.usage });
     } catch (error: unknown) {
       next(error);
     }

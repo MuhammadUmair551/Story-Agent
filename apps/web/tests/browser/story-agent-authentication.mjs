@@ -12,6 +12,7 @@ const tab = await (await fetch(`${debugging.origin}/json/new?about:blank`, { met
 const socket = new WebSocket(tab.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
 let sequence = 0, assertions = 0; const pending = new Map(), exceptions = [], requests = []; const requestPaths = new Map();
+let pollingScenario;
 socket.onmessage = ({ data }) => {
   const message = JSON.parse(data); const callback = pending.get(message.id);
   if (callback) { pending.delete(message.id); if (message.error) callback.reject(new Error(JSON.stringify(message.error))); else callback.resolve(message.result); }
@@ -21,6 +22,20 @@ socket.onmessage = ({ data }) => {
     if (path.startsWith("/api/")) { const record = { path, method: message.params.request.method }; requests.push(record); requestPaths.set(message.params.requestId, record); }
   }
   if (message.method === "Network.responseReceived") { const record = requestPaths.get(message.params.requestId); if (record) record.status = message.params.response.status; }
+  if (message.method === "Fetch.requestPaused") {
+    const requestId = message.params.requestId;
+    void (async () => {
+      if (!pollingScenario) { await send("Fetch.continueRequest", { requestId }); return; }
+      const scenario = pollingScenario; scenario.requests++;
+      if (scenario.requests === 2) {
+        // Span another polling tick to prove slow requests cannot overlap.
+        await new Promise(resolve => setTimeout(resolve, 12000));
+        await send("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" }); return;
+      }
+      const payload = scenario.requests === 1 ? scenario.queued : scenario.completed;
+      await send("Fetch.fulfillRequest", { requestId, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "application/json" }], body: Buffer.from(JSON.stringify(payload)).toString("base64") });
+    })().catch(() => exceptions.push("Isolated polling fixture failed"));
+  }
 };
 const send = (method, params = {}) => new Promise((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
 const evaluate = async (expression) => { const result = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails)); return result.result?.value; };
@@ -50,9 +65,14 @@ const check = (condition, message) => { assertions++; assert.ok(condition, messa
 const state = async () => await (await fetch(`${control}/test/state`)).json();
 const api = async (path, method = "GET", body) => await evaluate(`(async () => { const session = await (await fetch('/api/auth/session')).json(); const response = await fetch(${JSON.stringify(`/api${path}`)}, {method:${JSON.stringify(method)},headers:{'Content-Type':'application/json','X-CSRF-Token':session.csrfToken},${body === undefined ? "" : `body:JSON.stringify(${JSON.stringify(body)}),`}});return {status:response.status,data:await response.json()}; })()`);
 const password = "A browser journey unique password!";
+let expiryChecked = false;
 const signup = async (email, name) => {
-  await navigate("/signup"); await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Display name", name); await fill("Email", email); await fill("Password", password); await click("Create account");
+  const expired = !expiryChecked;
+  await navigate("/signup"); await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Display name", name); await fill("Email", email); await fill("Password", password);
+  if (!expiryChecked) { assert.equal((await (await fetch(`${control}/test/advance-time`)).json()).advanced, true); expiryChecked = true; }
+  await click("Create account");
   await waitFor("document.querySelector('[role=status]')?.textContent.includes('Signup processed')"); check(true, "Signup gives an honest generic response without email delivery");
+  if (expired) check(true, "An open signup form refreshes its expired anonymous cookie and CSRF state");
   check(await evaluate("![...document.querySelectorAll('.auth-card a')].some(el => /verify-email|forgot-password|reset-password/.test(el.pathname))"), "No removed recovery or verification links");
 };
 const login = async (email, secret = password) => { await navigate("/login"); await waitFor("document.querySelector('.auth-card form button:not(:disabled)')"); await fill("Email", email); await fill("Password", secret); await click("Sign in"); };
@@ -116,6 +136,20 @@ try {
   check((await api("/story-agent/runs")).data.runs.length === 1, "Account history survives password change");
   await evaluate("[...document.querySelectorAll('.forge-nav__content button')].find(el => el.textContent.includes('Story vault')).click()");
   await waitFor("document.querySelector('.forge-history-entry__delete')");
+  const completed = (await api(`/story-agent/runs/${run.runId}`)).data;
+  pollingScenario = { requests: 0, completed, queued: { ...completed, run: { ...completed.run, status: "queued", lockedUntil: new Date(Date.now() + 300000).toISOString() }, draft: null } };
+  await send("Fetch.enable", { patterns: [{ urlPattern: `${web.origin}/api/story-agent/runs/${run.runId}`, requestStage: "Request" }] });
+  await evaluate("document.querySelector('.forge-history-entry__open').click()");
+  await waitFor("document.querySelector('.forge-results .forge-kicker')?.textContent === 'In progress'");
+  check(true, "A leased saved run displays its actual processing state");
+  await waitFor("document.querySelector('.forge-feedback')?.textContent.includes('Status updates are unavailable')");
+  check(pollingScenario.requests === 2, "A slow polling request does not overlap another polling tick");
+  check(await evaluate("document.querySelector('.forge-results .forge-kicker')?.textContent === 'In progress'"), "Polling failure preserves the saved run and exposes retry feedback");
+  await waitFor("document.querySelector('.forge-results .forge-kicker')?.textContent === 'Ready' && document.querySelector('.delivery-initiative')");
+  check(pollingScenario.requests === 3 && await evaluate("!document.querySelector('.forge-feedback')?.textContent.includes('Status updates are unavailable')"), "Polling retries successfully, displays the hierarchy and clears outage feedback");
+  await send("Fetch.disable"); pollingScenario = undefined;
+  await evaluate("[...document.querySelectorAll('.forge-nav__content button')].find(el => el.textContent.includes('Story vault')).click()");
+  await waitFor("document.querySelector('.forge-history-entry__delete')");
   await evaluate("document.querySelector('.forge-history-entry__delete').click()"); await waitFor("document.querySelector('[role=alertdialog]')");
   await click("Cancel"); await waitFor("!document.querySelector('[role=alertdialog]')");
   check((await api("/story-agent/runs")).data.runs.length === 1, "Cancel preserves the history record");
@@ -131,7 +165,7 @@ try {
   await click("Sign out all sessions"); await waitFor("location.pathname === '/login'");
   check((await api("/story-agent/runs")).status === 401, "Sign out all sessions invalidates browser access");
   check(exceptions.length === 0, "No browser JavaScript exceptions");
-  console.log(`PASS: ${assertions} browser assertions covering immediate signup, login, password change, removed email routes, logout, cookies, ownership, projects, generation, review, impact, refinement and responsive layouts.`);
+  console.log(`PASS: ${assertions} browser assertions covering immediate signup, login, password change, removed email routes, logout, cookies, ownership, projects, generation, polling outage/recovery, review, impact, refinement and responsive layouts.`);
 } catch (error) {
   await writeFile(".repo-cache/phase5-no-mail-browser-failure.json", JSON.stringify({ pathname: await evaluate("location.pathname"), text: await evaluate("document.body.innerText"), exceptions, requests }, null, 2));
   await writeFile(".repo-cache/phase5-no-mail-browser-failure.png", Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));

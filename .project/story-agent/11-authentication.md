@@ -277,6 +277,29 @@ anonymous. A database restore or session-invalidation operation needs separate a
 
 ## Verification and limitations
 
+### Authentication stabilization
+
+Signup awaits the MongoDB insert before responding. A duplicate normalized email receives
+the same 202 response without changing the existing password; 202 is not evidence that a
+new account was created. Signup and login use the same injected database/auth_users
+repository, shared email schema, NFC passwords and scrypt-v1 parameters. Credential
+mismatch returns 401, Origin/CSRF rejection 403, and rate limits/hash saturation 429.
+GET /auth/session returns 200 with user=null after logout and can create an anonymous
+CSRF session; this is not authenticated access.
+
+Source timeouts are eight hours absolute and thirty minutes idle for authenticated
+sessions, thirty minutes absolute for anonymous sessions. Cookie max-age is eight hours
+after login and thirty minutes for anonymous bootstrap. Server expiry/version checks
+apply even when a browser cookie remains present. No configurable timeout env variable
+or permanent account lockout is implemented. Rate windows remain fifteen minutes.
+
+Auth forms refresh their cookie-matching CSRF state before unsafe account actions and
+coalesce concurrent bootstrap requests. This fixes expired/cross-tab cached tokens without
+replaying credential submissions or relaxing server checks. Normal failed logins never
+retry automatically. The isolated browser fixture advances only its own clock to cover
+an anonymous session expiring while a signup form stays open; it is not a live timed
+production smoke test. Cookie flags, same-origin proxying and ownership remain unchanged.
+
 Repository validation discovers control-plane tests with the quoted recursive Node glob
 `node --test "codebase/**/*.test.mjs"`, including all seven nested scanner tests. API/web
 tests cover immediate signup, generic duplicate errors, login/logout, cookie security,

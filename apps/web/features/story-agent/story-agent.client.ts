@@ -55,6 +55,11 @@ export const buildStoryAgentRunCopyText = (run: StoryAgentRun): string => {
 
 type Fetch = typeof fetch;
 
+export const storyAgentStatusLabel = (run: Pick<StoryAgentRun, "status" | "lockedUntil">, now = Date.now()): string => {
+  if (run.status === "queued" && run.lockedUntil && Date.parse(run.lockedUntil) > now) return "In progress";
+  return { draft: "Ready", queued: "In queue", questions: "Needs a choice", failed: "Needs repair" }[run.status];
+};
+
 type CreateRunInput = {
   projectId?: string | undefined;
   requirement: string;
@@ -160,6 +165,7 @@ export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
     requirement: typeof record.requirement === "string" ? record.requirement : "",
     projectId: typeof record.projectId === "string" ? record.projectId : undefined,
     deletingAt: typeof record.deletingAt === "string" ? record.deletingAt : undefined,
+    lockedUntil: typeof record.lockedUntil === "string" ? record.lockedUntil : undefined,
     questions: asStrings(record.questions),
     stories,
     plan,

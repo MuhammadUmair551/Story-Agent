@@ -4,13 +4,17 @@ import type { AccountSession } from "@workspace/types";
 export const accountSchema = z.object({ userId: z.string(), email: z.email(), displayName: z.string(), role: z.enum(["user", "admin"]) });
 const sessionSchema = z.object({ user: accountSchema.nullable(), csrfToken: z.string().min(32) });
 let cached: Promise<AccountSession> | undefined;
+let lookupInFlight = false;
 // A full navigation drops the previous account's client and server-component caches.
 export const navigateAccount = (path: "/" | "/login"): void => { window.location.replace(new URL(path, window.location.origin).href); };
 export const readAccountSession = (refresh = false): Promise<AccountSession> => {
-  if (!cached || refresh) cached = fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
-    if (!response.ok) throw new Error("Account service is unavailable. Please try again.");
-    return sessionSchema.parse(await response.json());
-  }).catch((error: unknown) => { cached = undefined; throw error; });
+  if (!cached || (refresh && !lookupInFlight)) {
+    lookupInFlight = true;
+    cached = fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error("Account service is unavailable. Please try again.");
+      return sessionSchema.parse(await response.json());
+    }).catch((error: unknown) => { cached = undefined; throw error; }).finally(() => { lookupInFlight = false; });
+  }
   return cached;
 };
 export const authenticatedFetch: typeof fetch = async (input, init) => {
@@ -24,6 +28,9 @@ export const authenticatedFetch: typeof fetch = async (input, init) => {
   return response;
 };
 export const accountRequest = async (path: string, body?: unknown, method = "POST"): Promise<Record<string, unknown>> => {
+  // Cookies can expire or rotate in another tab while this form remains open.
+  // Refresh the matching CSRF state before sending a mutation; never replay the POST.
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) await readAccountSession(true);
   const response = await authenticatedFetch(`/api/auth${path}`, { method, headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const payload: unknown = await response.json(); const record = z.record(z.string(), z.unknown()).parse(payload);
   if (!response.ok) throw new Error(typeof record.error === "string" ? record.error : "Account request failed.");

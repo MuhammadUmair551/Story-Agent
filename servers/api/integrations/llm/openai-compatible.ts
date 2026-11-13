@@ -27,11 +27,6 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
     ? value as Record<string, unknown>
     : undefined;
 
-const readErrorMessage = async (response: Response): Promise<string> => {
-  const body = await response.text();
-  return body.trim() || `Provider request failed with status ${String(response.status)}.`;
-};
-
 const readCompletion = async (response: Response): Promise<Readonly<{ text: string; usage: LlmUsage }>> => {
   let payload: unknown;
   try {
@@ -68,12 +63,16 @@ const createClient = (config: ProviderConfig, fetcher: LlmFetch): LlmClient => O
         body: JSON.stringify({ model: config.model, messages }),
         signal: controller.signal
       });
-      if (!response.ok) throw transportError(errorKindForStatus(response.status), await readErrorMessage(response), response.status);
+      if (!response.ok) {
+        // Upstream bodies can contain credentials, prompts or private request diagnostics.
+        await response.body?.cancel();
+        throw transportError(errorKindForStatus(response.status), `Provider request failed with status ${String(response.status)}.`, response.status);
+      }
       const completion = await readCompletion(response);
       return Object.freeze({ ...completion, provider: config.name, model: config.model });
     } catch (error: unknown) {
       if (isLlmTransportError(error)) throw error;
-      throw transportError("retryable", error instanceof Error ? error.message : "Provider request failed.");
+      throw transportError("retryable", "Provider transport failed or timed out.");
     } finally {
       clearTimeout(timeout);
     }
