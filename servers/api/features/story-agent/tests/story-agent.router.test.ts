@@ -165,3 +165,35 @@ void test("reports missing and exhausted provider routes", async () => {
     (error: unknown): boolean => isStoryAgentRouterError(error) && error.code === "providers_unavailable"
   );
 });
+
+void test("permanent 404 and 402 rejection is terminal even while circuits cool down, but fallback can succeed", async () => {
+  const calls: string[] = []; let recover = false;
+  const diagnostics: string[] = [];
+  const router = createStoryAgentProviderRouter({
+    config: { providers: [provider("gemini"), provider("ollama")], routes: routes(["gemini", "ollama"]), cooldownMs: 100 },
+    createClient: (config) => ({ complete: () => {
+      calls.push(config.name);
+      if (recover && config.name === "ollama") return Promise.resolve(result(config.name));
+      return Promise.reject(Object.assign(new Error("private-provider-body"), { kind: "bad-request", status: config.name === "gemini" ? 404 : 402 }));
+    } }), logger: { warn: (message, fields) => { diagnostics.push(JSON.stringify({ message, ...fields })); } }, clock: { now: () => recover ? 100 : 0 }
+  });
+  for (let attempt = 0; attempt < 3; attempt++) await assert.rejects(() => router.complete({ profile: "generate", messages: [] }), (error: unknown) => isStoryAgentRouterError(error) && error.code === "provider_rejected");
+  assert.equal(calls.length, 4);
+  assert.match(diagnostics.join("\n"), /provider_payment_required/);
+  assert.match(diagnostics.join("\n"), /provider_model_or_endpoint_unavailable/);
+  assert.doesNotMatch(diagnostics.join("\n"), /private-provider-body/);
+  recover = true; assert.equal((await router.complete({ profile: "generate", messages: [] })).provider, "ollama");
+});
+
+void test("an unexpected half-open error releases the trial so a later cooldown can recover", async () => {
+  let now = 0; let calls = 0;
+  const router = createStoryAgentProviderRouter({
+    config: { providers: [provider("groq")], routes: routes(["groq"]), cooldownMs: 100 },
+    createClient: () => ({ complete: () => { calls++; if (calls <= 2) return Promise.reject(providerError("retryable")); if (calls === 3) return Promise.reject(new Error("unexpected fixture failure")); return Promise.resolve(result("groq")); } }),
+    logger: { warn: () => undefined }, clock: { now: () => now }
+  });
+  await assert.rejects(() => router.complete({ profile: "generate", messages: [] }));
+  await assert.rejects(() => router.complete({ profile: "generate", messages: [] }));
+  now = 100; await assert.rejects(() => router.complete({ profile: "generate", messages: [] }));
+  now = 200; assert.equal((await router.complete({ profile: "generate", messages: [] })).provider, "groq");
+});

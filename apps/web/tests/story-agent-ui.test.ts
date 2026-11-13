@@ -6,6 +6,7 @@ import type { StoryAgentRun } from "../features/story-agent/story-agent.types";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QualityReview } from "../features/story-agent/components/quality-review";
+import { storyAgentStatusLabel } from "../features/story-agent/story-agent.client";
 
 const run: StoryAgentRun = {
     runId: "run-123",
@@ -30,6 +31,16 @@ const run: StoryAgentRun = {
     usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
     createdAt: "2026-01-01T00:00:00.000Z"
 };
+
+test("history polling distinguishes an active lease from queued and terminal results", () => {
+    const active = parseStoryAgentRun({ ...run, status: "queued", lockedUntil: "2026-01-01T00:05:00.000Z" });
+    const now = Date.parse("2026-01-01T00:00:00.000Z");
+    assert.equal(storyAgentStatusLabel(active, now), "In progress");
+    assert.equal(storyAgentStatusLabel(active, now + 5 * 60_000), "In queue");
+    assert.equal(storyAgentStatusLabel({ ...active, status: "draft" }, now), "Ready");
+    assert.equal(storyAgentStatusLabel({ ...active, status: "failed" }, now), "Needs repair");
+    assert.equal(storyAgentStatusLabel({ ...active, status: "questions" }, now), "Needs a choice");
+});
 
 test("filters history by requirement and generated story titles", () => {
     const filtered = filterStoryAgentRuns([

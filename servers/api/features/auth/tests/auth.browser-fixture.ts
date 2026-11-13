@@ -9,6 +9,9 @@ const control = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1:4306");
     response.setHeader("Content-Type", "application/json"); response.setHeader("Cache-Control", "no-store");
     if (request.method !== "GET") { response.writeHead(405).end(); return; }
+    if (url.pathname === "/test/advance-time") {
+      fixture.advance(31 * 60_000); response.end(JSON.stringify({ advanced: true })); return;
+    }
     if (url.pathname === "/test/state") {
       response.end(JSON.stringify({ runs: await fixture.memory.db.getCollection("story_agent_runs").find({}), projects: await fixture.memory.db.getCollection("story_agent_projects").find({}) })); return;
     }

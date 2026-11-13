@@ -53,3 +53,18 @@ void test("classifies timeout aborts and fetch failures as retryable", async () 
   await assert.rejects(() => timeout.createClient({ ...config, timeoutMs: 1 }).complete({ messages: [] }), (error: unknown): boolean => isLlmTransportError(error) && error.kind === "retryable");
   await assert.rejects(() => unavailable.createClient(config).complete({ messages: [] }), (error: unknown): boolean => isLlmTransportError(error) && error.kind === "retryable");
 });
+
+void test("retains HTTP failure classification without exposing provider bodies or transport diagnostics", async () => {
+  for (const status of [402, 404, 429, 503]) {
+    const gateway = createLlmGateway({ fetch: () => Promise.resolve(new Response("private-provider-diagnostic", { status })) });
+    await assert.rejects(() => gateway.createClient(config).complete({ messages: [] }), (error: unknown) => {
+      assert.ok(isLlmTransportError(error)); assert.equal(error.status, status);
+      assert.equal(error.kind, status >= 500 || status === 429 ? "retryable" : "bad-request");
+      assert.doesNotMatch(error.message, /private-provider-diagnostic/); return true;
+    });
+  }
+  const gateway = createLlmGateway({ fetch: () => Promise.reject(new Error("private-network-diagnostic")) });
+  await assert.rejects(() => gateway.createClient(config).complete({ messages: [] }), (error: unknown) => {
+    assert.ok(isLlmTransportError(error)); assert.doesNotMatch(error.message, /private-network-diagnostic/); return true;
+  });
+});

@@ -79,7 +79,55 @@ Unauthenticated requests receive `401`; missing/mismatched CSRF or disallowed or
 receive `403`. Other accounts' resource IDs return `404`. Keep cookie jars private and
 ignored. The browser handles cookies and CSRF automatically; never use localStorage tokens.
 
-Draft/questions return `200`; queued returns `202`; failed returns `500`; validation errors return `400`; a full queue returns `503`; and a per-instance request limit returns `429` with `retryAfterMs`. `queued` is not a draft—wait for worker retry and query the run again.
+Draft/questions return `200`; temporary provider unavailability queues with `202`.
+Missing providers or rejection by every configured provider returns `503` with a persisted
+failed run and stable `reason`. Other pipeline failures retain `500`; inspect `reason`
+and quality results rather than assuming a database or authentication failure. Invalid
+input returns `400`, a full queue returns `503`, and admission limits return `429`.
+`queued` is not a completed draft. An active queue lease is displayed as In progress;
+polling errors remain visible and retain the saved run instead of fabricating a failure.
+
+### Provider and queue diagnostics
+
+The gateway appends `/chat/completions` to the configured OpenAI-compatible base URL and
+passes the configured model unchanged. Gemini's base is
+`https://generativelanguage.googleapis.com/v1beta/openai`; Ollama's direct-cloud base is
+`https://ollama.com/v1`. There are no hardcoded runtime model defaults. An incomplete
+provider triple is omitted; a route referencing only omitted providers is a configuration
+failure. Named, legacy and Ollama alias settings keep their existing precedence.
+
+On 2026-11-12, the ignored local configuration used gemini-2.5-flash and
+gemma4:31b:cloud. This does not certify Render's values. Google's current deprecation
+notice restricts gemini-2.5-flash access to existing active users and lists December 1,
+2026 for automatic replacement. Ollama's direct cloud API requires a model ID from
+its catalog, for example gemma4:31b, rather than an app/CLI cloud suffix. Verify model
+availability and free quota privately before any separately approved configuration change.
+
+The transport preserves HTTP status/kind but discards raw provider response bodies and
+network exception messages. Router logs record provider/model/profile and a fixed
+reasonCode: payment required (402), model/endpoint unavailable (404), auth failure,
+temporary failure or request rejection. Successful provider and pipeline outcome logs
+record provider identities, attempts and a reason code, never credentials or prompts.
+Old logs containing only 402/404 cannot distinguish exact account billing/model-access
+causes or identify the successful provider; a successful HTTP response can also contain
+clarification questions. Do not infer a completed hierarchy from HTTP 200 alone.
+
+Fallback always tries the remaining route. If every usable provider rejects the request
+permanently, the run fails honestly rather than being queued. A retryable failure or
+retryable open circuit can queue. Circuit opening still requires two failures; the
+configured cooldown defaults to 60 seconds. A half-open trial is released even if an
+unexpected error occurs. The API worker polls every 120 seconds by default, leases a
+run for five minutes and permits five processing attempts within its 30-minute expiry.
+These are source defaults; environment overrides for cooldown/polling must be checked.
+
+Queue persistence errors retain the lease for retry instead of marking generated output
+failed. A subsequent claim reconciles an already-saved owner-matching draft without
+regenerating it, and successful completion clears stale queued errors. Work pauses while
+a Free host sleeps. No background progress or TTL timing is established by offline tests.
+
+References: [Gemini compatibility](https://ai.google.dev/gemini-api/docs/openai),
+[Gemini deprecations](https://ai.google.dev/gemini-api/docs/deprecations),
+[Ollama cloud model names](https://docs.ollama.com/cloud).
 
 ## Capacity and production deployment
 

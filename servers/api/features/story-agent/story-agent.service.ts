@@ -189,11 +189,12 @@ const request = async (
     return { text: completion.text };
   } catch (error: unknown) {
     if (isStoryAgentRouterError(error)) {
+      ledger.stages.push(stage(name, error.code === "providers_unavailable" ? "skipped" : "failed", error.message));
       if (error.code === "providers_unavailable") return result(ledger, "queued", [], { reason: error.code });
       return result(ledger, "failed", [], { reason: error.code });
     }
-    ledger.stages.push(stage(name, "failed", error instanceof Error ? error.message : "Provider request failed."));
-    return result(ledger, "failed", [], { reason: error instanceof Error ? error.message : "provider_failed" });
+    ledger.stages.push(stage(name, "failed", "Provider request failed."));
+    return result(ledger, "failed", [], { reason: "provider_failed" });
   }
 };
 

@@ -6,7 +6,7 @@ import { publicUser } from "./auth.types.js";
 
 export const authError = (status: number, message = "Authentication could not be completed.") => Object.assign(new Error(message), { status });
 const iso = (time: number) => new Date(time).toISOString();
-const signupResult = Object.freeze({ message: "Signup processed. Sign in with your email and password." });
+const signupResult = Object.freeze({ message: "Signup processed. Sign in with your email and password. If you already have an account, its existing password is unchanged." });
 
 export const createAuthService = async ({ repository, now = Date.now }: Readonly<{ repository: AuthRepository; now?: () => number }>) => {
   const dummyHash = await hashPassword(randomToken());

@@ -14,7 +14,7 @@ const toIso = (value: number): string => new Date(value).toISOString();
 const clearQueueFields = Object.freeze({ nextAttemptAt: null, lockedUntil: null });
 
 const isExpired = (run: StoryAgentRunDocument, now: string): boolean =>
-  (run.queueAttempts ?? 0) >= maximumQueueAttempts || (run.expiresAt !== undefined && run.expiresAt < now);
+  (run.queueAttempts ?? 0) > maximumQueueAttempts || (run.expiresAt !== undefined && run.expiresAt <= now);
 
 const resultFields = (result: StoryAgentPipelineResult, now: string): Partial<StoryAgentRunDocument> => ({
   ...(result.questions ? { questions: [...result.questions] } : {}),
@@ -26,7 +26,8 @@ const resultFields = (result: StoryAgentPipelineResult, now: string): Partial<St
   attempts: result.attempts,
   stages: [...result.stages],
   validationErrors: [...result.validationErrors],
-  ...(result.reason ? { reason: result.reason, error: result.reason } : {}),
+  reason: result.reason ?? null,
+  error: result.reason ?? null,
   ...clearQueueFields,
   updatedAt: now
 });
@@ -55,14 +56,25 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
       recordQueueEvent("claimed");
       recordQueueWait(startedAt - new Date(run.createdAt).getTime());
       const processingStartedAt = clock.now();
+      // A worker can lose its acknowledgement after saving valid output. Reconcile
+      // the durable draft before spending another provider call or expiring it.
+      const draft = await repository.getDraftByRun(run.runId);
+      if (draft && draft.ownerId === run.ownerId) {
+        await repository.updateRunStatus(run.runId, "draft", { stories: [...draft.stories], ...(draft.plan ? { plan: draft.plan } : {}), reason: null, error: null, ...clearQueueFields, updatedAt: now });
+        recordQueueEvent("completed");
+        recordQueueProcessing(clock.now() - processingStartedAt, "draft");
+        return;
+      }
       if (isExpired(run, now)) {
         await repository.updateRunStatus(run.runId, "failed", { reason: "expired", error: "expired", ...clearQueueFields, updatedAt: now });
         recordQueueEvent("expired");
         recordQueueProcessing(clock.now() - processingStartedAt, "failed");
         return;
       }
+      let providerReturned = false;
       try {
         const result = await service.run({ requirement: run.requirement, ...(run.context ? { context: run.context } : {}), ...(run.projectId ? { projectId: run.projectId, projectRules: run.projectRules } : {}) });
+        providerReturned = true;
         if (result.status === "draft") {
           await repository.saveDraft({ runId: run.runId, ...(run.ownerId ? { ownerId: run.ownerId } : {}), stories: result.stories ?? [], ...(result.plan ? { plan: result.plan } : {}), createdAt: now });
           await repository.updateRunStatus(run.runId, "draft", resultFields(result, now));
@@ -86,7 +98,10 @@ export const createStoryAgentQueue = ({ repository, service, logger, clock, inte
         recordQueueEvent("failed");
         recordQueueProcessing(clock.now() - processingStartedAt, "failed");
       } catch (error: unknown) {
-        const reason = error instanceof Error ? error.message : "queue_processing_failed";
+        // Persistence failures retain the lease for reconciliation/retry; they must
+        // not turn a successful model result into a terminal generation failure.
+        if (providerReturned) throw error;
+        const reason = "queue_processing_failed";
         logger.error("Story Agent queue run failed.", { runId: run.runId, reasonCode: "queue_processing_failed" });
         await repository.updateRunStatus(run.runId, "failed", { reason, error: reason, ...clearQueueFields, updatedAt: now });
         recordQueueEvent("failed");

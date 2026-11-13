@@ -28,6 +28,7 @@ export type StoryAgentRun = {
   requirement: string;
   projectId?: string | undefined;
   deletingAt?: string | undefined;
+  lockedUntil?: string | null | undefined;
   questions?: string[] | undefined;
   stories?: StoryAgentStory[] | undefined;
   plan?: StoryAgentPlan | undefined;

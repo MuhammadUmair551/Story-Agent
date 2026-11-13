@@ -26,8 +26,8 @@ export type StoryAgentRunDocument = Readonly<Record<string, unknown>> & Readonly
   attempts: number;
   stages: readonly StoryAgentStageOutcome[];
   validationErrors: readonly string[];
-  reason?: string | undefined;
-  error?: string | undefined;
+  reason?: string | null | undefined;
+  error?: string | null | undefined;
   nextAttemptAt?: string | null | undefined;
   expiresAt?: string | undefined;
   lockedUntil?: string | null | undefined;
