@@ -42,9 +42,12 @@ const retryDelay = (response: Response): number | undefined => {
   return Number.isFinite(delay) ? Math.min(30 * 60_000, Math.max(0, delay)) : undefined;
 };
 const readCompletion = async (response: Response): Promise<Readonly<{ text: string; usage: LlmUsage; finishReason?: LlmCompletion["finishReason"] }>> => {
+  // Reading can fail after headers arrive; keep transport/abort failures distinct
+  // from a fully received but malformed JSON envelope.
+  const body = await response.text();
   let payload: unknown;
   try {
-    payload = JSON.parse(await response.text()) as unknown;
+    payload = JSON.parse(body) as unknown;
   } catch {
     throw transportError("invalid-response", "Provider returned an invalid response envelope.", undefined, "malformed_provider_response");
   }

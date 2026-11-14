@@ -310,8 +310,8 @@ export const createStoryAgentService = (dependencies: PipelineDependencies) => {
       let plan: unknown = decoded.kind === "plan" ? decoded.plan : undefined;
       let diagnostic: StoryAgentDiagnostic = { category: decoded.kind === "invalid" ? decoded.category : "validation_failed", reason: "validation_failed", stage: repair ? "repair" : "generate", retryable: false, provider: generated.provider, model: generated.model, ...(decoded.kind === "invalid" ? { issues: decoded.issues } : {}) };
       errors = decoded.kind === "invalid" ? decoded.errors : [];
-      if (input.refinement) {
-        try { plan = mergeRefinedArtifact(input.refinement, planSchema.parse(plan)); }
+      if (input.refinement && decoded.kind === "plan") {
+        try { plan = mergeRefinedArtifact(input.refinement, decoded.plan); }
         catch (error: unknown) {
           errors = [error instanceof Error ? error.message : "Story identity/context mapping could not be verified."];
           plan = undefined; candidate = undefined;

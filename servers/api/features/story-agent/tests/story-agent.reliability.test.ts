@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import type { Request, Response } from "express";
 import type { LlmCompletion, MongoPersistence, MongoDocument, MongoCollection } from "../../../integrations/index.js";
 import { createStoryAgentProviderRouter } from "../story-agent.router.js";
-import { createStoryAgentService } from "../story-agent.service.js";
+import { createStoryAgentService, flattenPlan } from "../story-agent.service.js";
+import { withStoryContext } from "../story-agent.metadata.js";
+import { parseGeneratedOutput } from "../story-agent.output.js";
 import { createStoryAgentRepository } from "../story-agent.repository.js";
 import { createStoryAgentController } from "../story-agent.controller.js";
 import { createStoryAgentFeature } from "../index.js";
@@ -46,6 +48,68 @@ void test("all-provider malformed output exhausts bounded recovery with a precis
   assert.equal(result.plan, undefined); assert.equal(result.stories, undefined);
   assert.deepEqual(fixture.calls, { primary: 3, secondary: 1 });
 });
+
+const refinementRecovery = (output: (attempt: number) => Pick<LlmCompletion, "text" | "finishReason">) => {
+  const prompts: string[] = [];
+  const route = createStoryAgentProviderRouter({
+    config: { providers: ["primary", "secondary"].map(name => ({ name, model: "fixture", baseUrl: "https://fixture.invalid/v1", apiKey: "fixture-only", timeoutMs: 1000 })), routes: { fast: [], generate: ["primary", "secondary"], tools: [] }, cooldownMs: 1000 },
+    createClient: provider => ({ capabilities: { strictJsonSchema: true }, complete: input => {
+      prompts.push(input.messages[0]?.content ?? "");
+      return Promise.resolve({ ...completion(provider.name, ""), ...output(prompts.length) });
+    } }), logger, clock: { now: () => 0 }
+  });
+  return { service: createStoryAgentService({ route, now: () => 0, budget }), prompts };
+};
+const repairErrors = (prompt: string): unknown => JSON.parse(prompt.match(/<validation-errors-data>\s*(.*?)\s*<\/validation-errors-data>/s)?.[1] ?? "null") as unknown;
+const refinementOriginal = () => withStoryContext("refinement-fixture", plan, flattenPlan(plan));
+const storyPath = "initiative.epics.0.features.0.stories.0";
+const wrongOutcome = structuredClone(plan); Reflect.set(wrongOutcome.initiative.epics[0]?.features[0] ?? {}, "outcome", 42);
+const missingStories = structuredClone(plan); Reflect.deleteProperty(missingStories.initiative.epics[0]?.features[0] ?? {}, "stories");
+for (const fixture of [
+  { label: "invalid JSON", output: { text: '{"plan": nope}' }, category: "invalid_json" },
+  { label: "truncated JSON", output: { text: '{"plan":{"initiative":' }, category: "truncated_json" },
+  { label: "completion-limit truncation", output: { text: JSON.stringify({ plan }), finishReason: "length" as const }, category: "truncated_json" },
+  { label: "missing nested outcome", output: { text: JSON.stringify({ plan: bad }) }, category: "missing_required_field" },
+  { label: "missing nested stories", output: { text: JSON.stringify({ plan: missingStories }) }, category: "missing_required_field" },
+  { label: "wrong field type", output: { text: JSON.stringify({ plan: wrongOutcome }) }, category: "invalid_field_type" },
+  { label: "unsupported wrapper", output: { text: JSON.stringify({ deliveryPlan: plan }) }, category: "unsupported_response_shape" }
+]) void test(`refinement preserves precise ${fixture.label} errors in both repairs and final diagnostics`, async () => {
+  const decoded = parseGeneratedOutput(fixture.output); if (decoded.kind !== "invalid") assert.fail();
+  assert.equal(decoded.category, fixture.category);
+  const original = refinementOriginal(); const before = structuredClone(original);
+  const recovery = refinementRecovery(() => fixture.output);
+  const result = await recovery.service.run({ requirement: "Readers resume chapters.", refinement: { original, artifactPath: storyPath, instructions: "Clarify title" } });
+  assert.equal(result.status, "failed"); assert.equal(result.plan, undefined); assert.equal(recovery.prompts.length, 3);
+  for (const prompt of recovery.prompts.slice(1)) assert.deepEqual(repairErrors(prompt), decoded.errors);
+  assert.deepEqual(result.validationErrors, decoded.errors); assert.equal(result.diagnostic?.category, fixture.category);
+  assert.deepEqual(result.diagnostic.issues, decoded.issues); assert.deepEqual(original, before);
+});
+for (const identity of [undefined, "story:unknown", "duplicate"] as const) void test(`parsed refinement still rejects ${identity ?? "missing"} story identity with precise repair feedback`, async () => {
+  const original = refinementOriginal(); const candidate = structuredClone(original);
+  const stories = candidate.initiative.epics[0]?.features[0]?.stories; assert.ok(stories?.[0] && stories[1]);
+  if (identity === undefined) Reflect.deleteProperty(stories[0], "artifactId");
+  else Reflect.set(stories[0], "artifactId", identity === "duplicate" ? stories[1].artifactId : identity);
+  const output = { text: JSON.stringify({ plan: candidate }) }; assert.equal(parseGeneratedOutput(output).kind, "plan");
+  const recovery = refinementRecovery(() => output);
+  const result = await recovery.service.run({ requirement: "Readers resume chapters.", refinement: { original, artifactPath: "initiative", instructions: "Clarify title" } });
+  assert.equal(result.status, "failed"); assert.equal(result.plan, undefined); assert.equal(recovery.prompts.length, 3);
+  assert.match(result.validationErrors.join(" "), /identity|artifactId/);
+  assert.deepEqual(repairErrors(recovery.prompts[1] ?? ""), result.validationErrors);
+  assert.deepEqual(result.diagnostic?.issues?.map(issue => issue.message), result.validationErrors);
+});
+void test("refinement repairs malformed output successfully while preserving omitted metadata and stable identity", async () => {
+  const original = refinementOriginal(); const before = structuredClone(original); const candidate = structuredClone(original);
+  const story = candidate.initiative.epics[0]?.features[0]?.stories[0]; assert.ok(story);
+  Reflect.set(story, "title", "A reader returns to the saved chapter"); Reflect.deleteProperty(story, "metadata");
+  const changes = [{ path: `${storyPath}.title`, explanation: "Clarifies the story title.", reason: "Name the saved reading outcome." }];
+  const recovery = refinementRecovery(attempt => ({ text: attempt === 1 ? '{"plan": nope}' : JSON.stringify({ plan: candidate, changes }) }));
+  const result = await recovery.service.run({ requirement: "Readers resume chapters.", refinement: { original, artifactPath: storyPath, instructions: "Clarify title" } });
+  assert.equal(result.status, "draft"); assert.equal(recovery.prompts.length, 2); assert.equal(result.quality?.status, "passed");
+  assert.deepEqual(result.refinementChanges, changes);
+  assert.deepEqual(result.plan?.initiative.epics[0]?.features[0]?.stories[0], { ...before.initiative.epics[0]?.features[0]?.stories[0], title: story.title });
+  assert.deepEqual(result.plan.initiative.epics[0].features[0].stories[1], before.initiative.epics[0]?.features[0]?.stories[1]);
+  assert.deepEqual(original, before);
+});
 void test("invalid generation persists failure metadata and never persists a partial draft", async () => {
   await withStoryApi(recovery(false).service, async ({ request, repository }) => {
     const response = await request("/runs", "POST", { requirement: "Readers resume chapters." });
@@ -58,9 +122,12 @@ void test("invalid generation persists failure metadata and never persists a par
 });
 for (const status of ["queued", "failed"] as const) void test(`${status} history without a plan cannot report passed quality or retained refinements`, async () => {
   await withStoryApi(recovery().service, async ({ repository, request }) => {
-    await repository.saveRun({ runId: "unusable", status, requirement: "Fixture", attempts: 0, usage, providers: [], stages: [], validationErrors: [], createdAt: "now", updatedAt: "now" });
+    await repository.saveRun({ runId: "unusable", status, requirement: "Fixture", plan, stories: flattenPlan(plan), quality: { status: "passed", checks: [] }, attempts: 0, usage, providers: [], stages: [], validationErrors: [], createdAt: "now", updatedAt: "now" });
     const body = await (await request("/runs/unusable")).json() as { run: { quality: { status: string }; plan?: unknown; refinements?: unknown } };
     assert.equal(body.run.quality.status, "not_evaluated"); assert.equal(body.run.plan, undefined); assert.equal(body.run.refinements, undefined);
+    const list = await (await request("/runs")).json() as { runs: { quality: { status: string }; plan?: unknown; stories?: unknown; refinements?: unknown }[] };
+    assert.equal(list.runs[0]?.quality.status, "not_evaluated"); assert.equal(list.runs[0].plan, undefined);
+    assert.equal(list.runs[0].stories, undefined); assert.equal(list.runs[0].refinements, undefined);
   });
 });
 

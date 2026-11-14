@@ -76,6 +76,23 @@ void test("classifies timeout aborts and fetch failures as retryable", async () 
   await assert.rejects(() => unavailable.createClient(config).complete({ messages: [] }), (error: unknown): boolean => isLlmTransportError(error) && error.kind === "retryable");
 });
 
+for (const failure of ["timeout", "network"] as const) void test(`a ${failure} while reading a successful HTTP response stays retryable`, async () => {
+  const gateway = createLlmGateway({ fetch: (_url, init) => {
+    assert.ok(init?.signal);
+    const signal = init.signal;
+    const stream = new ReadableStream<Uint8Array>({ start: controller => {
+      if (failure === "network") controller.error(new Error("private-response-body-transport-detail"));
+      else signal.addEventListener("abort", () => { controller.error(new DOMException("private-response-body-transport-detail", "AbortError")); }, { once: true });
+    } });
+    return Promise.resolve(new Response(stream, { status: 200 }));
+  } });
+  await assert.rejects(() => gateway.createClient({ ...config, timeoutMs: 10 }).complete({ messages: [] }), (error: unknown) => {
+    assert.ok(isLlmTransportError(error)); assert.equal(error.kind, "retryable");
+    assert.equal(error.code, failure === "timeout" ? "provider_timeout" : "provider_network_failed");
+    assert.doesNotMatch(error.message, /private-response-body-transport-detail/); return true;
+  });
+});
+
 void test("retains HTTP failure classification without exposing provider bodies or transport diagnostics", async () => {
   for (const status of [402, 404, 429, 503]) {
     const gateway = createLlmGateway({ fetch: () => Promise.resolve(new Response("private-provider-diagnostic", { status })) });

@@ -283,7 +283,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       const skip = Number(request.query.skip ?? 0);
       const runs = await repository.listRuns({ limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20, skip: Number.isInteger(skip) && skip >= 0 ? skip : 0 });
       response.status(HTTP_STATUS.ok).json({ runs: runs.map((run) => {
-        const presented = run.refinements?.some((proposal) => proposal.status === "accepted") ? presentRun(run) : run;
+        const presented = presentRun(run);
         return { ...presented, refinements: undefined, analyses: undefined };
       }) });
     } catch (error: unknown) {
