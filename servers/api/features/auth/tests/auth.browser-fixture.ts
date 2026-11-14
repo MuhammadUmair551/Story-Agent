@@ -12,6 +12,9 @@ const control = createServer((request, response) => {
     if (url.pathname === "/test/advance-time") {
       fixture.advance(31 * 60_000); response.end(JSON.stringify({ advanced: true })); return;
     }
+    if (url.pathname === "/test/fail-next-generation") {
+      fixture.failNextGeneration(); response.end(JSON.stringify({ configured: true })); return;
+    }
     if (url.pathname === "/test/state") {
       response.end(JSON.stringify({ runs: await fixture.memory.db.getCollection("story_agent_runs").find({}), projects: await fixture.memory.db.getCollection("story_agent_projects").find({}) })); return;
     }

@@ -59,7 +59,7 @@ The evaluator is a separate live-provider command. Generation and repair require
 
 The evaluator exits `0` only when every fixture passes, `1` when one or more quality failures occur, and `2` when there are inconclusive fixtures but no quality failures. Inconclusive fixtures are never counted as passes. Its diagnostics are sanitized and omit raw model output, credentials, and prompt data. Token metrics are `reported` only when the provider supplied usage; otherwise they are `unavailable`. Run it only with configured provider access; it is not part of `pnpm test`.
 
-Repair remains bounded: at most two repairs, the prior output is limited to 12,000 characters, and at most ten validation errors of 500 characters each are supplied. The pipeline enforces six model calls, 12,000 reported total tokens, and 60 seconds; providers that omit usage cannot support exact token enforcement.
+Repair remains bounded: at most two repairs, the prior output is limited to 12,000 characters, and at most ten validation errors of 500 characters each are supplied. The pipeline enforces six physical provider attempts, 12,000 reported total tokens, and 60 seconds of cumulative active processing across queued retries; providers that omit usage cannot support exact token enforcement.
 
 The widget is the bottom-right Gecko launcher; Ctrl+J opens and focuses it. Enter sends, Shift+Enter adds a newline, and Escape closes the panel. History lists saved runs; queued runs poll every 10 seconds. The forest-dark interface uses reusable `@workspace/ui` primitives and the `GeckoMascot` export. Nonessential mascot and interface motion is reduced for users who request reduced motion.
 
@@ -89,6 +89,10 @@ polling errors remain visible and retain the saved run instead of fabricating a 
 
 ### Provider and queue diagnostics
 
+See [generation reliability](12-generation-reliability.md) for strict output capabilities,
+physical request accounting, cumulative retry budgets, lease fencing, failure metadata,
+the `not_evaluated` quality state and the private provider operator checklist.
+
 The gateway appends `/chat/completions` to the configured OpenAI-compatible base URL and
 passes the configured model unchanged. Gemini's base is
 `https://generativelanguage.googleapis.com/v1beta/openai`; Ollama's direct-cloud base is
@@ -112,7 +116,8 @@ Old logs containing only 402/404 cannot distinguish exact account billing/model-
 causes or identify the successful provider; a successful HTTP response can also contain
 clarification questions. Do not infer a completed hierarchy from HTTP 200 alone.
 
-Fallback always tries the remaining route. If every usable provider rejects the request
+Fallback tries eligible compatible providers within the cumulative budget. Known permanent
+rejections are retained for that run. If every usable provider rejects the request
 permanently, the run fails honestly rather than being queued. A retryable failure or
 retryable open circuit can queue. Circuit opening still requires two failures; the
 configured cooldown defaults to 60 seconds. A half-open trial is released even if an

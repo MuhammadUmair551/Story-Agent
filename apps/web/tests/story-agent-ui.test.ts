@@ -6,7 +6,8 @@ import type { StoryAgentRun } from "../features/story-agent/story-agent.types";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QualityReview } from "../features/story-agent/components/quality-review";
-import { storyAgentStatusLabel } from "../features/story-agent/story-agent.client";
+import { storyAgentStatusLabel, storyAgentFailureRun } from "../features/story-agent/story-agent.client";
+import { GenerationFeedback } from "../features/story-agent/components/generation-feedback";
 
 const run: StoryAgentRun = {
     runId: "run-123",
@@ -40,6 +41,45 @@ test("history polling distinguishes an active lease from queued and terminal res
     assert.equal(storyAgentStatusLabel({ ...active, status: "draft" }, now), "Ready");
     assert.equal(storyAgentStatusLabel({ ...active, status: "failed" }, now), "Needs repair");
     assert.equal(storyAgentStatusLabel({ ...active, status: "questions" }, now), "Needs a choice");
+});
+
+test("failed API responses preserve saved run identity, stage, retryability and HTTP status", async () => {
+    const diagnostic = { category: "missing_required_field", reason: "validation_failed", stage: "repair", retryable: false, provider: "fixture", model: "fixture", issues: [{ path: "initiative.epics.0.features.0.outcome", code: "invalid_type", message: "Expected a string." }] };
+    const client = createStoryAgentClient("/api", () => Promise.resolve(Response.json({ runId: "saved-failure", status: "failed", error: "Expected a string.", reason: "validation_failed", diagnostic }, { status: 500 })));
+    await assert.rejects(() => client.createRun({ requirement: "Fixture requirement" }), (error: unknown) => {
+        const failed = storyAgentFailureRun(error, "Fixture requirement");
+        assert.equal(failed.runId, "saved-failure"); assert.equal(failed.requirement, "Fixture requirement");
+        assert.equal(failed.diagnostic?.httpStatus, 500); assert.equal(failed.diagnostic?.stage, "repair"); assert.equal(failed.diagnostic?.retryable, false);
+        const markup = renderToStaticMarkup(createElement(GenerationFeedback, { run: failed }));
+        assert.match(markup, /saved-failure/); assert.match(markup, /Generation could not complete/); assert.match(markup, /initiative.epics.0.features.0.outcome/);
+        assert.doesNotMatch(markup, /Quality &amp; refinement/); return true;
+    });
+});
+
+for (const status of ["queued", "failed"] as const) test(`${status} data cannot retain a previous plan, passed quality or refinement controls`, () => {
+    const stale = parseStoryAgentRun({ ...run, status, quality: { status: "passed", checks: [] }, refinements: [] });
+    assert.equal(stale.plan, undefined); assert.equal(stale.stories, undefined); assert.equal(stale.quality, undefined); assert.equal(stale.refinements, undefined);
+    const markup = renderToStaticMarkup(createElement(QualityReview, { run: stale, client: createStoryAgentClient("/api"), onUpdated: () => undefined }));
+    assert.doesNotMatch(markup, /Quality &amp; refinement|Propose refinement/);
+    assert.match(markup, /validated delivery plan is required/);
+});
+
+test("queued and processing feedback describes the saved run without implying a completed plan", async () => {
+    const queued: StoryAgentRun = { runId: "saved-queue", requirement: "Fixture", status: "queued", diagnostic: { category: "provider_transport", reason: "provider_rate_limited", stage: "generate", retryable: true } };
+    const markup = renderToStaticMarkup(createElement(GenerationFeedback, { run: queued }));
+    assert.match(markup, /Automatic retry is scheduled/); assert.match(markup, /do not need to submit it again/);
+    assert.equal(storyAgentStatusLabel(queued, 0), "In queue");
+    assert.equal(storyAgentStatusLabel({ ...queued, lockedUntil: "1970-01-01T00:01:00.000Z" }, 0), "In progress");
+    const client = createStoryAgentClient("/api", () => Promise.resolve(Response.json({ ...queued, lockedUntil: "1970-01-01T00:01:00.000Z" }, { status: 202 })));
+    assert.equal(storyAgentStatusLabel(await client.createRun({ requirement: "Fixture" }), 0), "In progress");
+});
+
+test("completed generation does not display a failure or queue feedback panel", () => {
+    assert.equal(renderToStaticMarkup(createElement(GenerationFeedback, { run })), "");
+});
+
+test("empty persisted draft cannot be mapped to a successful result", () => {
+    assert.equal(parseStoryAgentRun({ runId: "empty", status: "draft", stories: [] }).status, "failed");
 });
 
 test("filters history by requirement and generated story titles", () => {

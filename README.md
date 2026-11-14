@@ -7,6 +7,9 @@
 
 ## Story Agent authentication
 
+Generation failure/recovery behavior, provider capabilities and the private operator
+checklist are documented in [generation reliability](.project/story-agent/12-generation-reliability.md).
+
 Signup uses name, email and password; sign in immediately afterward. Email is an unverified
 login identifier. No email provider, sending domain or custom domain is required. Forgotten
 password recovery is unavailable; use a password manager. Account settings offer password

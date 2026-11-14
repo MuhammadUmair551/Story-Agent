@@ -20,7 +20,7 @@ const setup = (mode: "permanent" | "fallback" | "temporary") => {
     return Promise.resolve(Response.json({ choices: [{ message: { content: JSON.stringify(output) } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
   } });
   const route = createStoryAgentProviderRouter({
-    config: { providers: ["gemini", "ollama", "groq"].map(name => ({ name, baseUrl: `https://${name}.example.test/v1`, model: "fixture", apiKey: "fixture-only", timeoutMs: 100 })), routes: { fast: ["gemini", "ollama", "groq"], generate: ["gemini", "ollama", "groq"], tools: ["gemini", "ollama", "groq"] }, cooldownMs: 60000 },
+    config: { providers: ["gemini", "ollama", "groq"].map(name => ({ name, baseUrl: `https://${name}.example.test/v1`, model: "fixture", apiKey: "fixture-only", timeoutMs: 100 })), routes: { fast: mode === "temporary" ? ["groq", "gemini", "ollama"] : ["gemini", "ollama", "groq"], generate: mode === "temporary" ? ["groq", "gemini", "ollama"] : ["gemini", "ollama", "groq"], tools: ["gemini", "ollama", "groq"] }, cooldownMs: 60000 },
     createClient: gateway.createClient, logger, clock: { now: () => now }
   });
   return { service: createStoryAgentService({ route, now: () => now, budget }), calls, clock: { now: () => now }, recover: () => { now = 120000; recovered = true; } };
@@ -36,7 +36,9 @@ void test("real adapter/router fallback persists a complete result without faile
     const stored = await repository.getRun(result.runId); const draft = await repository.getDraftByRun(result.runId);
     assert.deepEqual(stored?.providers, ["groq"]); assert.deepEqual(draft?.plan, plan);
     assert.doesNotMatch(JSON.stringify(stored), /private-provider-response/);
-    assert.deepEqual(fixture.calls, ["gemini", "ollama", "groq", "gemini", "ollama", "groq"]);
+    assert.deepEqual(fixture.calls, ["gemini", "ollama", "groq", "groq"]);
+    assert.equal(stored.accounting?.physicalAttempts, 4);
+    assert.deepEqual(Object.keys(stored.accounting.permanentFailures).sort(), ["gemini", "ollama"]);
   });
 });
 
@@ -59,11 +61,13 @@ void test("temporary provider failure queues once, recovers after cooldown and p
     assert.equal(response.status, 202);
     const result = await response.json() as { runId: string };
     assert.equal((await repository.getRun(result.runId))?.status, "queued");
+    assert.equal((await repository.getRun(result.runId))?.accounting?.physicalAttempts, 3);
     fixture.recover();
     const queue = createStoryAgentQueue({ repository, service: fixture.service, logger, clock: fixture.clock, intervalMs: 120000 });
     await queue.processNext();
     const stored = await repository.getRun(result.runId);
     assert.equal(stored?.status, "draft"); assert.equal(stored.reason, null); assert.equal(stored.error, null);
+    assert.equal(stored.accounting?.physicalAttempts, 5); assert.equal(stored.attempts, 5);
     assert.equal(stored.lockedUntil, null); assert.deepEqual(stored.providers, ["groq"]);
     assert.deepEqual((await repository.getDraftByRun(result.runId))?.plan, plan);
   });

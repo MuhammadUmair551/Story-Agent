@@ -40,7 +40,29 @@ void test("classifies HTTP and malformed-response failures", async () => {
   await assert.rejects(() => auth.createClient(config).complete({ messages: [] }), (error: unknown): boolean => isLlmTransportError(error) && error.kind === "auth" && error.status === 401);
   await assert.rejects(() => retryable.createClient(config).complete({ messages: [] }), (error: unknown): boolean => isLlmTransportError(error) && error.kind === "retryable" && error.status === 429);
   await assert.rejects(() => badRequest.createClient(config).complete({ messages: [] }), (error: unknown): boolean => isLlmTransportError(error) && error.kind === "bad-request" && error.status === 400);
-  await assert.rejects(() => malformed.createClient(config).complete({ messages: [] }), (error: unknown): boolean => isLlmTransportError(error) && error.kind === "bad-request");
+  await assert.rejects(() => malformed.createClient(config).complete({ messages: [] }), (error: unknown): boolean => isLlmTransportError(error) && error.kind === "invalid-response" && error.code === "malformed_provider_response");
+});
+
+void test("strict schemas are capability-gated and finish reasons are preserved", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const gateway = createLlmGateway({ fetch: (_url, init) => { const body = init?.body; assert.ok(typeof body === "string"); bodies.push(JSON.parse(body) as Record<string, unknown>); return Promise.resolve(Response.json({ choices: [{ message: { content: "{}" }, finish_reason: "length" }] })); } });
+  const contract = { name: "fixture", schema: { type: "object", properties: {}, required: [], additionalProperties: false } };
+  const strict = gateway.createClient({ ...config, name: "groq", baseUrl: "https://api.groq.com/openai/v1", model: "openai/gpt-oss-20b" });
+  assert.equal(strict.capabilities?.strictJsonSchema, true);
+  assert.equal((await strict.complete({ messages: [], outputContract: contract })).finishReason, "length");
+  assert.deepEqual(bodies[0]?.response_format, { type: "json_schema", json_schema: { name: "fixture", strict: true, schema: contract.schema } });
+  const compatible = gateway.createClient(config);
+  await compatible.complete({ messages: [], outputContract: contract });
+  assert.equal(Object.hasOwn(bodies[1] ?? {}, "response_format"), false);
+  await assert.rejects(() => compatible.complete({ messages: [], outputContract: contract, requireStructuredOutput: true }), error => isLlmTransportError(error) && error.code === "unsupported_structured_output");
+  assert.equal(bodies.length, 2);
+});
+
+void test("normalizes distinct HTTP failure categories and safe retry delays", async () => {
+  for (const [status, code] of [[401, "provider_auth_failed"], [403, "provider_auth_failed"], [402, "provider_account_restricted"], [404, "provider_model_unavailable"], [429, "provider_rate_limited"], [503, "provider_server_error"]] as const) {
+    const gateway = createLlmGateway({ fetch: () => Promise.resolve(new Response("private-key-and-prompt", { status, headers: { "Retry-After": "3" } })) });
+    await assert.rejects(() => gateway.createClient(config).complete({ messages: [] }), error => { assert.ok(isLlmTransportError(error)); assert.equal(error.code, code); assert.equal(error.retryAfterMs, 3000); assert.doesNotMatch(error.message, /private-key/); return true; });
+  }
 });
 
 void test("classifies timeout aborts and fetch failures as retryable", async () => {

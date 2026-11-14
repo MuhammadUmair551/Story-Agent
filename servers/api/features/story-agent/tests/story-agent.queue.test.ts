@@ -5,10 +5,12 @@ import type { Logger } from "@workspace/logging";
 import { createStoryAgentQueue } from "../story-agent.queue.js";
 import type { StoryAgentRepository, StoryAgentRunDocument } from "../story-agent.repository.js";
 import type { StoryAgentPipelineResult } from "../story-agent.service.js";
+import { flattenPlan } from "../story-agent.service.js";
+import { plan } from "./story-agent.fixture.js";
 
 const logger: Logger = { info: (): void => undefined, warn: (): void => undefined, error: (): void => undefined };
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
-const pipeline = (status: StoryAgentPipelineResult["status"]): StoryAgentPipelineResult => ({ status, attempts: 1, usage, providers: [], stages: [], validationErrors: [], ...(status === "draft" ? { stories: [] } : {}), ...(status === "queued" ? { reason: "providers_unavailable" } : {}) });
+const pipeline = (status: StoryAgentPipelineResult["status"]): StoryAgentPipelineResult => ({ status, attempts: 1, usage, providers: [], stages: [], validationErrors: [], ...(status === "draft" ? { stories: flattenPlan(plan), plan } : {}), ...(status === "queued" ? { reason: "providers_unavailable" } : {}) });
 const queuedRun = (queueAttempts = 0): StoryAgentRunDocument => ({ runId: "run-1", status: "queued", requirement: "Create stories", usage, providers: [], attempts: 0, stages: [], validationErrors: [], queueAttempts, nextAttemptAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-01-01T01:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" });
 
 const repository = (run: StoryAgentRunDocument | null, updates: Array<{ status: string; extra: unknown }>): StoryAgentRepository => ({
@@ -42,7 +44,7 @@ void test("queue monitoring failure does not prevent processing persisted work",
 
 void test("reschedules providers-unavailable runs", async () => {
   const updates: Array<{ status: string; extra: unknown }> = [];
-  const queue = createStoryAgentQueue({ repository: repository(queuedRun(), updates), service: { run: async () => pipeline("queued") }, logger, clock: { now: () => 0 }, intervalMs: 120_000 });
+  const queue = createStoryAgentQueue({ repository: repository(queuedRun(), updates), service: { run: async () => pipeline("queued") }, logger, clock: { now: () => 0 }, intervalMs: 120_000, random: () => 0 });
   await queue.processNext();
   assert.equal(updates[0]?.status, "queued");
   assert.match(String((updates[0]?.extra as { nextAttemptAt?: string }).nextAttemptAt), /1970-01-01T00:02:00/);
@@ -120,7 +122,7 @@ void test("a draft persistence acknowledgement failure cannot overwrite valid ou
   const base = repository(queuedRun(), updates);
   const queue = createStoryAgentQueue({
     repository: { ...base,
-      getDraftByRun: () => Promise.resolve(saved ? { runId: "run-1", stories: [], createdAt: "2026-01-01T00:00:00.000Z" } : null),
+      getDraftByRun: () => Promise.resolve(saved ? { runId: "run-1", stories: flattenPlan(plan), plan, createdAt: "2026-01-01T00:00:00.000Z" } : null),
       saveDraft: () => { saved = true; return Promise.resolve(); },
       updateRunStatus: async (id, status, extra) => { await base.updateRunStatus(id, status, extra); if (status === "draft" && loseAcknowledgement) { loseAcknowledgement = false; throw new Error("private-storage-diagnostic"); } }
     }, service: { run: () => { calls++; return Promise.resolve(pipeline("draft")); } }, logger, clock: { now: () => 0 }, intervalMs: 120_000

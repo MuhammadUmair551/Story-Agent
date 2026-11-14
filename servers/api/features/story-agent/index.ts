@@ -12,6 +12,7 @@ import { createIntelligenceRepository } from "./story-agent.intelligence.reposit
 import { createOwnedStoryPersistence } from "./story-agent.ownership.js";
 import type { StoryAgentRouterConfig } from "./story-agent.router.js";
 import { createQueueWriteGate } from "./story-agent.controller.js";
+import { executionCorrelation } from "./story-agent.execution.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type FeatureDependencies = Readonly<{ db: MongoPersistence; llm: LlmGateway; logger: Logger; clock: Clock; queueIntervalMs: number; maxConcurrentRuns: number; maxRequestsPerWindow: number; requestWindowMs: number; maxTrackedClients: number; routerConfig?: StoryAgentRouterConfig }>;
@@ -30,13 +31,13 @@ export const createStoryAgentFeature = ({ db, llm, logger, clock, queueIntervalM
     const result = await pipeline.analyze(input); span.setAttribute("story_agent.outcome", result.status); return result;
   }, (result) => result.status), run: async (input: Parameters<typeof pipeline.run>[0]) => {
     const startedAt = clock.now();
-    return await withStorySpan("story_agent.generation", {}, async (span) => {
+    return await withStorySpan("story_agent.generation", executionCorrelation(input.execution), async (span) => {
       const result = await pipeline.run(input);
       const durationMs = clock.now() - startedAt;
       span.setAttribute("story_agent.outcome", result.status);
       span.setAttribute("story_agent.attempt_count", result.attempts);
       recordGeneration(result.status, durationMs);
-      logger.info("Story Agent pipeline completed.", { status: result.status, reasonCode: result.reason ?? "none", providers: [...result.providers], attempts: result.attempts });
+      logger.info("Story Agent pipeline completed.", { ...executionCorrelation(input.execution), stage: result.diagnostic?.stage ?? "complete", category: result.diagnostic?.category, status: result.status, reasonCode: result.reason ?? "none", providers: [...result.providers], attempts: result.attempts });
       return result;
     }, (result) => result.status);
   } });
@@ -45,15 +46,16 @@ export const createStoryAgentFeature = ({ db, llm, logger, clock, queueIntervalM
   const reviews = createIntelligenceRepository(db);
   const capacity = createStoryAgentCapacity({ maxConcurrentRuns, maxRequestsPerWindow, requestWindowMs, maxTrackedClients, clock });
   const serializeQueueWrite = createQueueWriteGate();
+  const foregroundRuns = new Set<string>();
   const queue = createStoryAgentQueue({ repository, service, logger, clock, intervalMs: queueIntervalMs, capacity });
   return Object.freeze({
-    routeDependencies: { db, logger, clock, repository, projects, reviews, service, capacity, serializeQueueWrite },
+    routeDependencies: { db, logger, clock, repository, projects, reviews, service, capacity, serializeQueueWrite, foregroundRuns },
     scope: (ownerId: string) => {
       const ownedDb = createOwnedStoryPersistence(db, ownerId);
       const ownedRepository = createStoryAgentRepository(ownedDb);
       const ownedCapacity: typeof capacity = { ...capacity, acquire: () => capacity.acquire(ownerId) };
-      return { db: ownedDb, logger, clock, repository: { ...ownedRepository, countQueuedRuns: repository.countQueuedRuns }, projects: createProjectRepository(ownedDb), reviews: createIntelligenceRepository(ownedDb), service,
-        capacity: ownedCapacity, serializeQueueWrite };
+      return { ownerId, db: ownedDb, logger, clock, repository: { ...ownedRepository, countQueuedRuns: repository.countQueuedRuns }, projects: createProjectRepository(ownedDb), reviews: createIntelligenceRepository(ownedDb), service,
+        capacity: ownedCapacity, serializeQueueWrite, foregroundRuns };
     },
     ensureIndexes: async (): Promise<void> => { await repository.ensureIndexes(); await projects.ensureIndexes(); },
     queue

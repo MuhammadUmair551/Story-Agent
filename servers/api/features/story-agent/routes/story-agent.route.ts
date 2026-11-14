@@ -16,11 +16,11 @@ import { createComparisonPageController, createFindingDecisionController } from 
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult>; analyze?: (input: IntelligenceInput) => Promise<StoryAgentIntelligenceResult> }>;
-export type StoryAgentRouteDependencies = Readonly<{ db: MongoPersistence; logger: Logger; clock: Clock; repository: StoryAgentRepository; projects: StoryAgentProjectRepository; reviews: StoryAgentIntelligenceRepository; service: Service; capacity: StoryAgentCapacity; serializeQueueWrite?: QueueWriteGate }>;
+export type StoryAgentRouteDependencies = Readonly<{ db: MongoPersistence; logger: Logger; clock: Clock; repository: StoryAgentRepository; projects: StoryAgentProjectRepository; reviews: StoryAgentIntelligenceRepository; service: Service; capacity: StoryAgentCapacity; serializeQueueWrite?: QueueWriteGate; foregroundRuns?: Set<string>; ownerId?: string }>;
 
-const handlers = ({ repository, projects, reviews, service, capacity, clock, serializeQueueWrite }: StoryAgentRouteDependencies) => {
+const handlers = ({ repository, projects, reviews, service, capacity, clock, serializeQueueWrite, foregroundRuns, ownerId, logger }: StoryAgentRouteDependencies) => {
   const projectController = createProjectController(projects, clock.now);
-  const controller = createStoryAgentController({ repository, service, capacity, clock, projects, ...(serializeQueueWrite ? { serializeQueueWrite } : {}) });
+  const controller = createStoryAgentController({ repository, service, capacity, clock, projects, logger, ...(ownerId ? { ownerId } : {}), ...(foregroundRuns ? { foregroundRuns } : {}), ...(serializeQueueWrite ? { serializeQueueWrite } : {}) });
   return { ...controller, listProjects: projectController.list, createProject: projectController.create, updateProject: projectController.update, deleteProject: projectController.remove,
     comparisons: createComparisonPageController(repository, reviews), analyze: createIntelligenceController({ repository, reviews, capacity, analyze: service.analyze, now: clock.now }), findingDecision: createFindingDecisionController(repository, reviews, clock.now) };
 };
