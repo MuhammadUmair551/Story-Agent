@@ -38,7 +38,7 @@ const result = (status: StoryAgentPipelineResult["status"]): StoryAgentPipelineR
 
 const createRepository = (saved: unknown[]): StoryAgentRepository => ({
   saveRun: async (document) => { saved.push(document); },
-  updateRunStatus: async () => undefined,
+  updateRunStatus: async (runId, status, extra) => { const run = saved.find(item => (item as { runId?: string }).runId === runId); if (run && typeof run === "object") Object.assign(run, extra, { status }); },
   getRun: async () => null,
   listRuns: async () => [],
   saveDraft: async (document) => { saved.push(document); },

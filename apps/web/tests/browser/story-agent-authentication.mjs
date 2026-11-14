@@ -13,6 +13,7 @@ const socket = new WebSocket(tab.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
 let sequence = 0, assertions = 0; const pending = new Map(), exceptions = [], requests = []; const requestPaths = new Map();
 let pollingScenario;
+let heldSelection;
 socket.onmessage = ({ data }) => {
   const message = JSON.parse(data); const callback = pending.get(message.id);
   if (callback) { pending.delete(message.id); if (message.error) callback.reject(new Error(JSON.stringify(message.error))); else callback.resolve(message.result); }
@@ -22,8 +23,10 @@ socket.onmessage = ({ data }) => {
     if (path.startsWith("/api/")) { const record = { path, method: message.params.request.method }; requests.push(record); requestPaths.set(message.params.requestId, record); }
   }
   if (message.method === "Network.responseReceived") { const record = requestPaths.get(message.params.requestId); if (record) record.status = message.params.response.status; }
+  if (message.method === "Network.loadingFinished") { const record = requestPaths.get(message.params.requestId); if (record) record.completed = true; }
   if (message.method === "Fetch.requestPaused") {
     const requestId = message.params.requestId;
+    if (heldSelection) { heldSelection.requestId = requestId; heldSelection.resolve(); return; }
     void (async () => {
       if (!pollingScenario) { await send("Fetch.continueRequest", { requestId }); return; }
       const scenario = pollingScenario; scenario.requests++;
@@ -108,6 +111,40 @@ try {
   check((await state()).runs[0].analyses[1].kind === "impact", "Requirement Impact Analysis retained");
   await click("Propose refinement"); await waitFor("document.querySelector('.forge-proposal')"); await click("Accept proposal");
   await waitFor("document.querySelector('.delivery-initiative h3')?.textContent.includes('clarified')"); check(true, "Refinement proposal and acceptance retained");
+  await click("New story");
+  check(await evaluate("!document.querySelector('.forge-quality') && !document.querySelector('.forge-results')"), "Starting a new run clears the prior plan, quality and refinement state");
+  assert.equal((await (await fetch(`${control}/test/fail-next-generation`)).json()).configured, true);
+  await input("document.querySelector('.forge-prompt textarea')", "Deliberate generation failure fixture"); await click("Shape it");
+  await waitFor("document.querySelector('.forge-results .forge-kicker')?.textContent === 'Needs repair' && document.querySelector('.forge-generation-feedback')");
+  const failedRun = (await state()).runs.find(item => item.status === "failed"); assert.ok(failedRun);
+  check(await evaluate(`!document.querySelector('.forge-quality') && !document.querySelector('.delivery-initiative') && document.querySelector('.forge-generation-feedback').innerText.includes(${JSON.stringify(failedRun.runId)})`), "A failed HTTP generation retains its persisted run ID and shows diagnostics without draft quality");
+  const failedDetail = (await api(`/story-agent/runs/${failedRun.runId}`)).data.run;
+  check(failedDetail.quality.status === "not_evaluated" && failedDetail.diagnostic.category === "missing_required_field" && !failedDetail.plan, "Failed saved generation has accurate quality and field diagnostics");
+  await evaluate("[...document.querySelectorAll('.forge-nav__content button')].find(el => el.textContent.includes('Story vault')).click()");
+  await waitFor("[...document.querySelectorAll('.forge-history-entry__open')].some(el => el.textContent.includes('Deliberate generation failure fixture'))");
+  await evaluate("[...document.querySelectorAll('.forge-history-entry__open')].find(el => el.textContent.includes('Deliberate generation failure fixture')).click()");
+  await waitFor("document.querySelector('.forge-results .forge-kicker')?.textContent === 'Needs repair'");
+  check(await evaluate("document.querySelector('.forge-generation-feedback') && !document.querySelector('.forge-quality')"), "A persisted failed attempt reopens with diagnostics and no refinement controls");
+  assert.equal((await api(`/story-agent/runs/${failedRun.runId}`, "DELETE")).status, 200);
+  await navigate("/");
+  const selectedDetail = (await api(`/story-agent/runs/${run.runId}`)).data;
+  await evaluate("[...document.querySelectorAll('.forge-nav__content button')].find(el => el.textContent.includes('Story vault')).click()");
+  await waitFor("document.querySelector('.forge-history-entry__open')");
+  const selectionPaused = new Promise(resolve => { heldSelection = { resolve }; });
+  const selectionStart = requests.length;
+  await send("Fetch.enable", { patterns: [{ urlPattern: `${web.origin}/api/story-agent/runs/${run.runId}`, requestStage: "Request" }] });
+  await evaluate("document.querySelector('.forge-history-entry__open').click()"); await selectionPaused;
+  await click("New story");
+  const staleRequestId = heldSelection.requestId; heldSelection = undefined;
+  await send("Fetch.fulfillRequest", { requestId: staleRequestId, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "application/json" }], body: Buffer.from(JSON.stringify(selectedDetail)).toString("base64") });
+  await send("Fetch.disable");
+  const selectionDeadline = Date.now() + 60000;
+  while (!requests.slice(selectionStart).some(item => item.path === `/api/story-agent/runs/${run.runId}` && item.status === 200 && item.completed)) {
+    assert.ok(Date.now() < selectionDeadline, "The delayed saved-entry response must finish before checking stale state");
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  check(await evaluate("!document.querySelector('.forge-results') && !document.querySelector('.forge-quality')"), "A late saved-entry response cannot restore stale quality after New story");
   await navigate("/account"); await fill("Display name", "Alice Updated"); await click("Save profile");
   await waitFor("document.querySelector('[role=status]')?.textContent.includes('Profile saved')");
   await navigate("/"); check(await evaluate("document.querySelector('.auth-session').innerText.includes('Alice Updated')"), "Profile persists after navigation");
@@ -134,6 +171,9 @@ try {
   await login("alice@example.test"); await waitFor("document.querySelector('[role=alert]')?.textContent.includes('invalid')"); check(true, "Old password rejected after change");
   await fill("Password", replacement); await click("Sign in"); await waitFor("location.pathname === '/' && document.querySelector('.story-forge')");
   check((await api("/story-agent/runs")).data.runs.length === 1, "Account history survives password change");
+  // Complete the post-login router refresh and client bootstrap before interacting
+  // with the vault; server-rendered controls can precede the new client instance.
+  await navigate("/");
   await evaluate("[...document.querySelectorAll('.forge-nav__content button')].find(el => el.textContent.includes('Story vault')).click()");
   await waitFor("document.querySelector('.forge-history-entry__delete')");
   const completed = (await api(`/story-agent/runs/${run.runId}`)).data;

@@ -11,7 +11,7 @@ import { z } from "zod";
 export const plan: StoryAgentPlan = { initiative: { title: "Reader continuity", outcome: "Readers resume chapters", epics: [{ title: "Reading", objective: "Resume progress", features: [{ title: "Chapter resume", outcome: "Continue reading", stories: [{ title: "A reader resumes a chapter", intent: "Continue reading", acceptanceCriteria: ["Given saved progress, when reading resumes, then the chapter opens at the saved position."], tasks: [{ title: "Restore position", description: "Read the stored offset and restore the chapter.", effort: "S" }] }] }] }] } };
 
 export const authFixture = async (secure = false, origins = ["http://localhost:3000"], port = 0, delayQueueReads = false) => {
-  const memory = createMemoryPersistence(); let time = Date.now();
+  const memory = createMemoryPersistence(); let time = Date.now(); let invalidGenerationResponses = 0;
   const now = () => time; const logger = { info: () => undefined, warn: () => undefined, error: () => undefined };
   const config = createApiConfig(readApiEnvironment({ NODE_ENV: "test", API_HOST: "127.0.0.1", API_PORT: "4000", WEB_ORIGIN: origins.join(","), LOG_LEVEL: "silent" }));
   const authConfig = { secure, publicOrigin: origins[0] ?? "http://localhost:3000" };
@@ -26,12 +26,14 @@ export const authFixture = async (secure = false, origins = ["http://localhost:3
     return { ...collection, countDocuments };
   } };
   const feature = createStoryAgentFeature({ db: storyDb, logger, clock: { now }, queueIntervalMs: 60_000, maxConcurrentRuns: 10, maxRequestsPerWindow: 100, requestWindowMs: 60_000, maxTrackedClients: 100,
-    routerConfig: { providers: ["fast", "generate"].map((name) => ({ name, model: "fixture", apiKey: "fixture-only", baseUrl: "https://provider.example.test/v1", timeoutMs: 1000 })), routes: { fast: ["fast"], generate: ["generate"], tools: ["generate"] }, cooldownMs: 1000 },
-    llm: { createClient: (provider) => ({ complete: (request) => {
+    routerConfig: { providers: ["fast", "generate", "recovery"].map((name) => ({ name, model: "fixture", apiKey: "fixture-only", baseUrl: "https://provider.example.test/v1", timeoutMs: 1000 })), routes: { fast: ["fast"], generate: ["generate", "recovery"], tools: ["generate"] }, cooldownMs: 1000 },
+    llm: { createClient: (provider) => ({ capabilities: { strictJsonSchema: true }, complete: (request) => {
       const prompt = request.messages[0]?.content ?? "";
       const raw = prompt.match(/<intelligence-data>(.*?)<\/intelligence-data>/s)?.[1];
       let output: unknown = provider.name === "fast" ? { needsClarification: false, questions: [], assumptions: [] } : { plan };
-      if (raw) {
+      if (provider.name !== "fast" && invalidGenerationResponses > 0) {
+        invalidGenerationResponses--; const malformed = structuredClone(plan); Reflect.deleteProperty(malformed.initiative.epics[0]?.features[0] ?? {}, "outcome"); output = { plan: malformed };
+      } else if (raw) {
         const data = z.object({ artifacts: z.array(z.object({ runId: z.string(), artifactPath: z.string() })).optional() }).parse(JSON.parse(raw) as unknown);
         output = data.artifacts ? { findings: [], reviewedArtifacts: data.artifacts, truncated: false } : { findings: [] };
       } else if (prompt.includes("<refinement-data>")) {
@@ -48,6 +50,7 @@ export const authFixture = async (secure = false, origins = ["http://localhost:3
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing test server address");
   const base = `http://127.0.0.1:${String(address.port)}`;
   return { app, auth, authConfig, feature, memory, scope, repository, authRepository: createAuthRepository(memory.db), base, now,
+    failNextGeneration: () => { invalidGenerationResponses = 3; },
     advance: (milliseconds: number) => { time += milliseconds; },
     close: async () => { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => { if (error) reject(error); else resolve(); })); }
   };

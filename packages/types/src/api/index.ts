@@ -5,6 +5,7 @@ export type {
   StoryAgentArtifactLevel,
   StoryAgentQualityCheck,
   StoryAgentQualityReport,
+  StoryAgentDiagnostic,
   StoryAgentRefinement,
   StoryAgentRefinementChange,
   StoryAgentClarifications,

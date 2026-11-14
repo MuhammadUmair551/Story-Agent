@@ -1,4 +1,4 @@
-import type { StoryAgentPlan, StoryAgentQualityReport, StoryAgentRefinement } from "@workspace/types";
+import type { StoryAgentPlan, StoryAgentQualityReport, StoryAgentRefinement, StoryAgentDiagnostic } from "@workspace/types";
 import type { StoryAgentAnalysis } from "@workspace/types";
 export type { StoryAgentPlan, StoryAgentTask, StoryAgentPlannedStory, StoryAgentFeature, StoryAgentEpic, StoryAgentQualityReport, StoryAgentRefinement, StoryAgentStoryMetadata } from "@workspace/types";
 export type StoryAgentStatus = "questions" | "draft" | "failed" | "queued";
@@ -39,6 +39,7 @@ export type StoryAgentRun = {
   usage?: StoryAgentUsage | undefined;
   error?: string | undefined;
   reason?: string | undefined;
+  diagnostic?: StoryAgentDiagnostic | undefined;
   createdAt?: string | undefined;
   updatedAt?: string | undefined;
   message?: string | undefined;
@@ -46,7 +47,7 @@ export type StoryAgentRun = {
 
 export type StoryAgentRunResponse = Pick<
   StoryAgentRun,
-  "runId" | "status" | "questions" | "stories" | "plan" | "usage" | "error" | "reason" | "quality"
+  "runId" | "status" | "questions" | "stories" | "plan" | "usage" | "error" | "reason" | "quality" | "diagnostic" | "lockedUntil"
 > & {
   message?: string | undefined;
 };

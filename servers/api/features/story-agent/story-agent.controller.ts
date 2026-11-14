@@ -1,9 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { trace, isSpanContextValid } from "@opentelemetry/api";
+import type { Logger } from "@workspace/logging";
+import { emptyAccounting, executionCorrelation } from "./story-agent.execution.js";
 import type { NextFunction, Request, Response } from "express";
 import { ERROR_CODES, ERROR_MESSAGES, HTTP_STATUS } from "../../constants/index.js";
 import { createApplicationError } from "../../errors/index.js";
 import type { StoryAgentCapacity } from "./story-agent.capacity.js";
-import { requirementInputSchema } from "./story-agent.validation.js";
+import { requirementInputSchema, planSchema } from "./story-agent.validation.js";
 import type { StoryAgentRepository, StoryAgentRunDocument } from "./story-agent.repository.js";
 import type { StoryAgentPipelineResult, StoryAgentPipelineInput } from "./story-agent.service.js";
 import { recordAdmission, withStorySpan, withStoryStageSpan } from "./story-agent.telemetry.js";
@@ -19,13 +22,19 @@ import { presentAnalysisFreshness } from "./story-agent.findings.controller.js";
 
 type Clock = Readonly<{ now: () => number }>;
 type Service = Readonly<{ run: (input: StoryAgentPipelineInput) => Promise<StoryAgentPipelineResult> }>;
-type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; capacity: StoryAgentCapacity; clock: Clock; projects?: StoryAgentProjectRepository; createRunId?: () => string; serializeQueueWrite?: QueueWriteGate }>;
-type JsonResponse = Pick<Response, "json" | "status">;
+type ControllerDependencies = Readonly<{ repository: StoryAgentRepository; service: Service; capacity: StoryAgentCapacity; clock: Clock; projects?: StoryAgentProjectRepository; createRunId?: () => string; serializeQueueWrite?: QueueWriteGate; foregroundRuns?: Set<string>; ownerId?: string | undefined; logger?: Logger | undefined }>;
+type JsonResponse = Pick<Response, "json" | "status"> & Partial<Pick<Response, "getHeader">>;
 
 const toIso = (value: number): string => new Date(value).toISOString();
 const queuedRetryDelayMs = 2 * 60 * 1_000;
 const queuedExpiryMs = 30 * 60 * 1_000;
 const rejectedProviderMessage = "No provider could accept this request. Check provider model availability, credentials and account limits.";
+const requestCorrelation = (request: Request, response: JsonResponse) => {
+  const header = request.headers["x-request-id"] ?? response.getHeader?.("x-request-id");
+  const requestId = typeof header === "string" && /^[\w-]{1,128}$/.test(header) ? header : randomUUID();
+  const span = trace.getActiveSpan()?.spanContext();
+  return { requestId, ...(span && isSpanContextValid(span) ? { traceId: span.traceId } : {}) };
+};
 const queuedByCapacity = (): StoryAgentPipelineResult => ({
   status: "queued",
   attempts: 0,
@@ -35,8 +44,6 @@ const queuedByCapacity = (): StoryAgentPipelineResult => ({
   validationErrors: [],
   reason: "capacity_queued"
 });
-
-type QueueWrite = Readonly<{ input: StoryAgentPipelineInput; pipeline: StoryAgentPipelineResult; runId: string; now: number }>;
 
 const runDocument = (runId: string, input: StoryAgentPipelineInput, pipeline: StoryAgentPipelineResult, now: number): StoryAgentRunDocument => {
   const errorMessage = pipeline.status === "failed"
@@ -53,6 +60,8 @@ const runDocument = (runId: string, input: StoryAgentPipelineInput, pipeline: St
     ...(pipeline.stories ? { stories: pipeline.stories } : {}),
     ...(pipeline.plan ? { plan: pipeline.plan } : {}),
     ...(pipeline.quality ? { quality: pipeline.quality } : {}),
+    ...(pipeline.diagnostic ? { diagnostic: pipeline.diagnostic } : {}),
+    ...(pipeline.accounting ? { accounting: pipeline.accounting } : {}),
     usage: pipeline.usage,
     providers: pipeline.providers,
     attempts: pipeline.attempts,
@@ -68,8 +77,9 @@ const runDocument = (runId: string, input: StoryAgentPipelineInput, pipeline: St
 
 const presentRun = (stored: StoryAgentRunDocument): StoryAgentRunDocument => {
   const run = { ...stored, requirement: activeRequirement(stored) };
-  let plan = activePlan(run) ?? (run.status === "draft" && run.stories?.length ? legacyPlan(run.requirement, run.stories) : undefined);
-  if (!plan) return { ...run, quality: explainQuality(undefined, run.validationErrors) };
+  if (run.status !== "draft") return { ...run, plan: undefined, stories: undefined, refinements: undefined, quality: { status: "not_evaluated", checks: [] } };
+  let plan = activePlan(run) ?? (run.stories?.length ? legacyPlan(run.requirement, run.stories) : undefined);
+  if (!plan || !planSchema.safeParse(plan).success) return { ...run, status: "failed", plan: undefined, stories: undefined, refinements: undefined, reason: "invalid_saved_plan", error: "The saved plan is incomplete and cannot be used.", diagnostic: { category: "invalid_story_structure", reason: "invalid_saved_plan", stage: "read", retryable: false }, quality: { status: "not_evaluated", checks: [] } };
   if (run.refinements?.some((proposal) => proposal.status === "accepted")) {
     try { plan = withStoryContext(run.runId, plan, run.stories); }
     catch (error: unknown) { return { ...run, plan, error: error instanceof Error ? error.message : "Story context mapping is uncertain; the original stories are retained.", quality: explainQuality(plan, validatePlan(plan, [], 10)) }; }
@@ -90,14 +100,19 @@ export const createQueueWriteGate = (): QueueWriteGate => {
   };
 };
 
-export const createStoryAgentController = ({ repository, service, capacity, clock, projects, createRunId = randomUUID, serializeQueueWrite = createQueueWriteGate() }:
+export const createStoryAgentController = ({ repository, service, capacity, clock, projects, createRunId = randomUUID, serializeQueueWrite = createQueueWriteGate(), foregroundRuns = new Set<string>(), ownerId, logger }:
   ControllerDependencies) => {
-  const saveQueuedRun = async ({ input, pipeline, runId, now }: QueueWrite): Promise<boolean> =>
-    await serializeQueueWrite(async () => {
-      if (await repository.countQueuedRuns() >= 20) return false;
-      await withStorySpan("story_agent.run.persist", { "story_agent.status": pipeline.status }, async () => { await repository.saveRun(runDocument(runId, input, pipeline, now)); });
-      return true;
-    });
+  const respond = (stored: StoryAgentRunDocument, response: JsonResponse): void => {
+    const run = presentRun(stored);
+    const status = run.status === "queued" ? HTTP_STATUS.accepted : run.status === "failed"
+      ? ["provider_rejected", "no_provider_configured", "unsupported_structured_output", "malformed_provider_response"].includes(run.reason ?? "") ? HTTP_STATUS.serviceUnavailable : HTTP_STATUS.internalServerError : HTTP_STATUS.ok;
+    response.status(status).json({ runId: run.runId, status: run.status, usage: run.usage,
+      ...(run.status === "draft" ? { plan: run.plan, stories: run.stories, quality: run.quality } : {}),
+      ...(run.status === "questions" ? { questions: run.questions ?? [] } : {}),
+      ...(run.status === "queued" ? { message: run.processing ? "This saved run is processing." : "This saved run is queued for retry.", lockedUntil: run.lockedUntil } : {}),
+      ...(run.reason ? { reason: run.reason } : {}), ...(run.error ? { error: run.error } : {}),
+      ...(run.diagnostic ? { diagnostic: { ...run.diagnostic, httpStatus: status } } : {}) });
+  };
   return {
   deleteRun: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
     try {
@@ -134,7 +149,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       const admission = capacity.acquire(request.socket.remoteAddress ?? "unknown");
       if (admission.kind !== "accepted") { response.status(admission.kind === "rate_limited" ? HTTP_STATUS.tooManyRequests : HTTP_STATUS.serviceUnavailable).json({ error: "Refinement capacity is unavailable. Try again shortly." }); return; }
       let pipeline: StoryAgentPipelineResult;
-      try { pipeline = await service.run({ requirement, ...(run.context ? { context: run.context } : {}), projectRules: run.projectRules, refinement: { original, artifactPath: input.artifactPath, instructions: input.instructions } }); }
+      try { pipeline = await service.run({ requirement, ...(run.context ? { context: run.context } : {}), projectRules: run.projectRules, refinement: { original, artifactPath: input.artifactPath, instructions: input.instructions }, execution: { runId: run.runId, ...requestCorrelation(request, response) } }); }
       finally { admission.release(); }
       if (pipeline.status !== "draft" || !pipeline.plan) { response.status(HTTP_STATUS.serviceUnavailable).json({ error: "No valid refinement proposal was produced. The original is unchanged.", reason: pipeline.reason }); return; }
       const changes = pipeline.refinementChanges ?? refinementChanges(original, pipeline.plan, input.artifactPath);
@@ -181,16 +196,14 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
     } catch (error: unknown) { next(error); }
   },
   createRun: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
+    let release: (() => void) | undefined;
+    let foregroundRunId: string | undefined;
+    let savedRun: StoryAgentRunDocument | undefined;
     try {
       const parsed = requirementInputSchema.parse(request.body);
       const project = parsed.projectId ? await projects?.get(parsed.projectId) : undefined;
       if (parsed.projectId && !project) { response.status(HTTP_STATUS.notFound).json({ error: "Project not found. Select an available project." }); return; }
       const input: StoryAgentPipelineInput = { ...parsed, ...(project ? { projectRules: project.rules } : {}) };
-      if (await repository.countQueuedRuns() >= 20) {
-        recordAdmission("queue_full");
-        response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Story Agent queue is full. Please try again shortly." });
-        return;
-      }
       const admission = withStoryStageSpan("story_agent.capacity.admission", () => {
         const decision = capacity.acquire(request.socket.remoteAddress ?? "unknown");
         return decision;
@@ -200,38 +213,69 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
         response.status(HTTP_STATUS.tooManyRequests).json({ error: "Too many Story Agent requests. Please try again shortly.", retryAfterMs: admission.retryAfterMs });
         return;
       }
-      const pipeline = admission.kind === "queued"
-        ? queuedByCapacity()
-        : await (async (): Promise<StoryAgentPipelineResult> => {
-          try { return await service.run(input); }
-          finally { admission.release(); }
-        })();
-      recordAdmission(admission.kind === "queued" ? "queued" : "accepted");
-      const runId = createRunId();
+      if (admission.kind === "accepted") release = admission.release;
+      const correlation = requestCorrelation(request, response);
+      const { requestId } = correlation;
+      const key = ownerId && createRunId === randomUUID ? createHash("sha256").update(`${ownerId}:${requestId}`).digest("hex") : undefined;
+      const runId = key ? `${key.slice(0, 8)}-${key.slice(8, 12)}-5${key.slice(13, 16)}-8${key.slice(17, 20)}-${key.slice(20, 32)}` : createRunId();
+      const requestHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
       const now = clock.now();
-      if (pipeline.status === "queued") {
-        if (!await saveQueuedRun({ input, pipeline, runId, now })) {
-          response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Story Agent queue is full. Please try again shortly." });
-          return;
+      const leaseId = admission.kind === "accepted" ? randomUUID() : undefined;
+      const initial: StoryAgentRunDocument = { ...runDocument(runId, input, queuedByCapacity(), now), ...correlation, requestHash, accounting: emptyAccounting(), processing: !!leaseId,
+        ...(leaseId ? { leaseId, reason: "processing", error: null, lockedUntil: toIso(now + 5 * 60_000), nextAttemptAt: toIso(now + 5 * 60_000) } : { lockedUntil: null }) };
+      const reservation = await serializeQueueWrite(async () => {
+        const existing = await repository.getRun(runId);
+        if (existing) return { existing };
+        if (await repository.countQueuedRuns() - foregroundRuns.size >= 20) return { full: true };
+        try { await withStorySpan("story_agent.run.persist", { "story_agent.status": initial.status, "story_agent.run.id": runId }, async () => { await repository.saveRun(initial); }); }
+        catch (error: unknown) {
+          if (!(typeof error === "object" && error !== null && "code" in error && error.code === 11000)) throw error;
+          const duplicate = await repository.getRun(runId); if (!duplicate) throw error; return { existing: duplicate };
         }
-        response.status(HTTP_STATUS.accepted).json({ runId, status: pipeline.status, message: "Providers are unavailable; the run is queued for retry." });
+        if (leaseId) { foregroundRuns.add(runId); foregroundRunId = runId; }
+        return { created: true };
+      });
+      if (reservation.existing) {
+        if (reservation.existing.requestHash !== requestHash) response.status(HTTP_STATUS.conflict).json({ error: "This request identifier belongs to a different submission." });
+        else respond(reservation.existing, response);
         return;
       }
-      await withStorySpan("story_agent.run.persist", { "story_agent.status": pipeline.status }, async () => { await repository.saveRun(runDocument(runId, input, pipeline, now)); });
+      if (reservation.full) { recordAdmission("queue_full"); response.status(HTTP_STATUS.serviceUnavailable).json({ error: "Story Agent queue is full. Please try again shortly." }); return; }
+      savedRun = initial;
+      logger?.info("Story Agent run persisted.", { ...correlation, runId, leaseId, stage: "admission" });
+      recordAdmission(admission.kind === "queued" ? "queued" : "accepted");
+      if (!leaseId) { respond(initial, response); return; }
+      const execution = { runId, ...correlation, leaseId, accounting: initial.accounting,
+        checkpoint: async (accounting: NonNullable<StoryAgentRunDocument["accounting"]>, stage: string) => {
+          try { await repository.updateRunStatus(runId, "queued", { accounting, updatedAt: toIso(clock.now()) }, leaseId); }
+          catch (error: unknown) { if (error instanceof Error && "code" in error && error.code === "stale_lease") throw error; throw Object.assign(new Error("Run accounting could not be persisted."), { code: "checkpoint_failed" }); }
+          logger?.info("Story Agent accounting persisted.", { ...executionCorrelation({ runId, ...correlation, leaseId }), stage, providerAttempts: accounting.physicalAttempts });
+        } };
+      const pipeline = await service.run({ ...input, execution });
       if (pipeline.status === "draft") {
-        await repository.saveDraft({ runId, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), createdAt: toIso(now) });
-        response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), ...(pipeline.quality ? { quality: pipeline.quality } : {}), usage: pipeline.usage });
-        return;
+        await repository.updateRunStatus(runId, "queued", { candidateLeaseId: leaseId }, leaseId);
+        await repository.saveDraft({ runId, leaseId, stories: pipeline.stories ?? [], ...(pipeline.plan ? { plan: pipeline.plan } : {}), createdAt: toIso(clock.now()) });
       }
-      if (pipeline.status === "questions") {
-        response.status(HTTP_STATUS.ok).json({ runId, status: pipeline.status, questions: pipeline.questions ?? [], usage: pipeline.usage });
-        return;
-      }
-      const unavailable = pipeline.reason === "provider_rejected" || pipeline.reason === "no_provider_configured";
-      response.status(unavailable ? HTTP_STATUS.serviceUnavailable : HTTP_STATUS.internalServerError).json({ runId, status: pipeline.status, reason: pipeline.reason, error: pipeline.reason === "provider_rejected" ? rejectedProviderMessage : pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed.", quality: pipeline.quality, usage: pipeline.usage });
+      const completed: StoryAgentRunDocument = { ...initial, ...runDocument(runId, input, pipeline, now), createdAt: initial.createdAt, updatedAt: toIso(clock.now()), processing: false, lockedUntil: null, leaseId: null,
+        diagnostic: pipeline.diagnostic ?? null,
+        ...(pipeline.status === "draft" ? { resultLeaseId: leaseId } : {}),
+        ...(pipeline.status === "queued" ? { nextAttemptAt: toIso(clock.now() + Math.max(queuedRetryDelayMs, pipeline.retryAfterMs ?? 0)) } : { nextAttemptAt: null }),
+        reason: pipeline.reason ?? null, error: pipeline.status === "failed" ? pipeline.reason === "provider_rejected" ? rejectedProviderMessage : pipeline.validationErrors[0] ?? pipeline.reason ?? "Story generation failed." : pipeline.reason ?? null };
+      await serializeQueueWrite(async () => {
+        await repository.updateRunStatus(runId, completed.status, completed, leaseId);
+        foregroundRuns.delete(runId);
+      });
+      logger?.info("Story Agent run persisted.", { ...correlation, runId, leaseId, stage: "complete", status: pipeline.status });
+      respond(completed, response);
     } catch (error: unknown) {
-      next(error);
-    }
+      if (!savedRun) { next(error); return; }
+      logger?.error("Story Agent saved run needs recovery.", { runId: savedRun.runId, requestId: savedRun.requestId, traceId: savedRun.traceId, leaseId: savedRun.leaseId, stage: "persistence", reasonCode: "execution_interrupted" });
+      try {
+        const current = await repository.getRun(savedRun.runId);
+        if (current && current.status !== "queued") { respond(current, response); return; }
+      } catch { /* A database outage cannot erase the already reserved run identity. */ }
+      response.status(HTTP_STATUS.serviceUnavailable).json({ runId: savedRun.runId, status: "queued", reason: "execution_interrupted", error: "The saved run is waiting for recovery. Do not submit it again.", diagnostic: { category: "generation_failed", reason: "execution_interrupted", stage: "persistence", retryable: true, httpStatus: HTTP_STATUS.serviceUnavailable } });
+    } finally { if (foregroundRunId) foregroundRuns.delete(foregroundRunId); release?.(); }
   },
   listRuns: async (request: Request, response: JsonResponse, next: NextFunction): Promise<void> => {
     try {
@@ -239,7 +283,7 @@ export const createStoryAgentController = ({ repository, service, capacity, cloc
       const skip = Number(request.query.skip ?? 0);
       const runs = await repository.listRuns({ limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20, skip: Number.isInteger(skip) && skip >= 0 ? skip : 0 });
       response.status(HTTP_STATUS.ok).json({ runs: runs.map((run) => {
-        const presented = run.refinements?.some((proposal) => proposal.status === "accepted") ? presentRun(run) : run;
+        const presented = presentRun(run);
         return { ...presented, refinements: undefined, analyses: undefined };
       }) });
     } catch (error: unknown) {

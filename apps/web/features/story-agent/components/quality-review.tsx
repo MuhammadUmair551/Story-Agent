@@ -45,6 +45,7 @@ export const QualityReview = ({ run, client, onUpdated }: Readonly<{ run: StoryA
   const [instructions, setInstructions] = useState("Clarify scope and improve the applicable quality findings without inventing requirements.");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  if (run.status !== "draft" || !run.plan) return <p role="status">A validated delivery plan is required before quality review or refinement.</p>;
   const options = run.plan ? artifacts(run.plan) : [];
   const pending = run.refinements?.find((proposal) => proposal.status === "pending");
   const perform = async (operation: () => Promise<void>, success: string): Promise<void> => {

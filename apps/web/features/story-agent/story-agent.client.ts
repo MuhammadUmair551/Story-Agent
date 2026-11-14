@@ -136,11 +136,13 @@ const asPlan = (value: unknown): StoryAgentPlan | undefined => {
   return typeof initiative.title === "string" && typeof initiative.outcome === "string" && epics.every((epic) => epic !== undefined) && epics.length > 0 ? { initiative: { title: initiative.title, outcome: initiative.outcome, epics: epics as NonNullable<typeof epics[number]>[] } } : undefined;
 };
 
-const qualitySchema = z.object({ status: z.enum(["passed", "failed"]), checks: z.array(z.object({
+const qualitySchema = z.object({ status: z.enum(["passed", "failed", "not_evaluated"]), checks: z.array(z.object({
   artifactPath: z.string(), level: z.enum(["initiative", "epic", "feature", "story", "task"]),
   dimension: z.enum(["scope", "ambiguity", "completeness", "independence", "testability", "requirement_coverage", "duplicate_behavior"]),
   status: z.enum(["passed", "failed", "warning", "needs_review"]), issue: z.string(), reason: z.string(), impact: z.string(), suggestedFix: z.string()
 })) }) satisfies z.ZodType<StoryAgentQualityReport>;
+
+const diagnosticSchema = z.object({ category: z.enum(["invalid_json", "truncated_json", "unsupported_response_shape", "missing_required_field", "invalid_field_type", "invalid_story_structure", "validation_failed", "provider_transport", "provider_configuration", "unsupported_capability", "budget_exhausted", "generation_failed"]), reason: z.string().max(100), stage: z.string().max(100), retryable: z.boolean(), httpStatus: z.number().int().optional(), provider: z.string().max(128).optional(), model: z.string().max(128).optional(), issues: z.array(z.object({ path: z.string(), code: z.string(), message: z.string() })).optional() });
 
 const refinementSchema = z.object({
   id: z.string(), artifactPath: z.string(), status: z.enum(["pending", "accepted", "rejected"]),
@@ -156,8 +158,10 @@ export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
   const stories = asStories(record.stories);
   const plan = asPlan(record.plan);
   const quality = qualitySchema.safeParse(record.quality);
+  const diagnostic = diagnosticSchema.safeParse(record.diagnostic);
   const refinements = z.array(refinementSchema).safeParse(record.refinements);
-  const invalidDraft = status === "draft" && stories === undefined && plan === undefined;
+  const invalidDraft = status === "draft" && !stories?.length && plan === undefined;
+  const usable = status === "draft" && !invalidDraft;
 
   return {
     runId: typeof record.runId === "string" ? record.runId : "",
@@ -167,10 +171,11 @@ export const parseStoryAgentRun = (value: unknown): StoryAgentRun => {
     deletingAt: typeof record.deletingAt === "string" ? record.deletingAt : undefined,
     lockedUntil: typeof record.lockedUntil === "string" ? record.lockedUntil : undefined,
     questions: asStrings(record.questions),
-    stories,
-    plan,
-    quality: quality.success ? quality.data : undefined,
-    refinements: refinements.success ? refinements.data : undefined,
+    stories: usable ? stories : undefined,
+    plan: usable ? plan : undefined,
+    quality: usable && plan && quality.success ? quality.data : undefined,
+    diagnostic: diagnostic.success ? diagnostic.data : undefined,
+    refinements: usable && plan && refinements.success ? refinements.data : undefined,
     refinementVersion: typeof record.refinementVersion === "number" ? record.refinementVersion : 0,
     analyses: z.array(analysisSchema).optional().parse(record.analyses),
     usage: asUsage(record.usage),
@@ -210,10 +215,20 @@ const request = async (fetcher: Fetch, url: string, init?: RequestInit): Promise
   const payload = await readJson(response);
 
   if (!response.ok) {
-    throw Object.assign(new Error(getErrorMessage(payload)), { status: response.status });
+    const record = asRecord(payload);
+    const run = typeof record.runId === "string" && record.runId && ["failed", "queued"].includes(String(record.status)) ? parseStoryAgentRun(payload) : undefined;
+    throw Object.assign(new Error(getErrorMessage(payload)), { status: response.status, ...(run ? { run: { ...run, diagnostic: run.diagnostic ? { ...run.diagnostic, httpStatus: response.status } : undefined } } : {}) });
   }
 
   return payload;
+};
+
+export const storyAgentFailureRun = (error: unknown, requirement: string): StoryAgentRun => {
+  if (error instanceof Error && "run" in error && typeof error.run === "object" && error.run !== null) {
+    const run = parseStoryAgentRun(error.run);
+    return { ...run, requirement: run.requirement || requirement, error: run.error || error.message };
+  }
+  return { runId: "", status: "failed", requirement, error: error instanceof Error ? error.message : "The forge could not shape that brief." };
 };
 
 export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = authenticatedFetch) => {
@@ -255,6 +270,7 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = authent
       return {
         runId: run.runId,
         status: run.status,
+        lockedUntil: run.lockedUntil,
         questions: run.questions,
         stories: run.stories,
         plan: run.plan,
@@ -262,6 +278,7 @@ export const createStoryAgentClient = (baseUrl: string, fetcher: Fetch = authent
         usage: run.usage,
         error: run.error,
         reason: run.reason,
+        diagnostic: run.diagnostic,
         message: typeof payload.message === "string" ? payload.message : undefined
       };
     },

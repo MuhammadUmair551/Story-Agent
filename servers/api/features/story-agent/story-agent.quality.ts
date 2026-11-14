@@ -1,5 +1,6 @@
 import type { StoryAgentArtifactLevel, StoryAgentPlan, StoryAgentQualityCheck, StoryAgentQualityReport } from "@workspace/types";
 import type { StoryAgentProjectRules } from "@workspace/types";
+import { planSchema } from "./story-agent.validation.js";
 
 export type StoryAgentArtifact = Readonly<{ path: string; level: StoryAgentArtifactLevel; title: string; text: string; criteria?: readonly string[] }>;
 
@@ -32,7 +33,8 @@ export const explainQuality = (plan: StoryAgentPlan | undefined, validationError
     impact: "The output cannot be safely saved as a usable draft.",
     suggestedFix: /Duplicate/.test(error) ? "Remove the overlapping story or give it a distinct user outcome and title." : /At most/.test(error) ? "Keep the highest-value stories within the configured story limit." : "Supply the required field at the reported path using the expected type and limits."
   }));
-  const artifacts = plan ? planArtifacts(plan) : [];
+  if (!plan || !planSchema.safeParse(plan).success) return { status: "not_evaluated", checks };
+  const artifacts = planArtifacts(plan);
   for (const artifact of artifacts) {
     const add = (dimension: StoryAgentQualityCheck["dimension"], status: StoryAgentQualityCheck["status"], issue: string, reason: string, impact: string, suggestedFix: string): void => {
       checks.push({ artifactPath: artifact.path, level: artifact.level, dimension, status, issue, reason, impact, suggestedFix });

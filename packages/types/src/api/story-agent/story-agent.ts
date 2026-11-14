@@ -79,8 +79,19 @@ export type StoryAgentQualityCheck = Readonly<{
 }>;
 
 export type StoryAgentQualityReport = Readonly<{
-  status: "passed" | "failed";
+  status: "passed" | "failed" | "not_evaluated";
   checks: readonly StoryAgentQualityCheck[];
+}>;
+
+export type StoryAgentDiagnostic = Readonly<{
+  category: "invalid_json" | "truncated_json" | "unsupported_response_shape" | "missing_required_field" | "invalid_field_type" | "invalid_story_structure" | "validation_failed" | "provider_transport" | "provider_configuration" | "unsupported_capability" | "budget_exhausted" | "generation_failed";
+  reason: string;
+  stage: string;
+  retryable: boolean;
+  httpStatus?: number | undefined;
+  provider?: string | undefined;
+  model?: string | undefined;
+  issues?: readonly Readonly<{ path: string; code: string; message: string }>[] | undefined;
 }>;
 
 export type StoryAgentRefinementChange = Readonly<{
@@ -107,10 +118,12 @@ export type StoryAgentRefinement = Readonly<{
 export type StoryAgentRunResponse = Readonly<{
   runId: string;
   status: StoryAgentRunStatus;
+  lockedUntil?: string | null | undefined;
   usage: StoryAgentUsage;
   questions?: readonly string[] | undefined;
   stories?: readonly StoryAgentStory[] | undefined;
   plan?: StoryAgentPlan | undefined;
   quality?: StoryAgentQualityReport | undefined;
   error?: string | undefined;
+  diagnostic?: StoryAgentDiagnostic | undefined;
 }>;
